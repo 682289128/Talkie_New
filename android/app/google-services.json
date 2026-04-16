@@ -1,0 +1,29 @@
+{
+  "project_info": {
+    "project_number": "998789277940",
+    "project_id": "talkie-c07a0",
+    "storage_bucket": "talkie-c07a0.firebasestorage.app"
+  },
+  "client": [
+    {
+      "client_info": {
+        "mobilesdk_app_id": "1:998789277940:android:03dda9a6ed904deb4116a1",
+        "android_client_info": {
+          "package_name": "com.example.talkie_new"
+        }
+      },
+      "oauth_client": [],
+      "api_key": [
+        {
+          "current_key": "AIzaSyA796zBIqYCSSUHcydDixrQ4zBPHKEnVNE"
+        }
+      ],
+      "services": {
+        "appinvite_service": {
+          "other_platform_oauth_client": []
+        }
+      }
+    }
+  ],
+  "configuration_version": "1"
+}

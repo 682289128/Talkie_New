@@ -1,0 +1,149 @@
+name: talkie_new
+description: "A new Flutter project."
+publish_to: 'none'
+
+version: 1.0.0+1
+
+environment:
+  sdk: ">=3.0.0 <4.0.0"
+
+dependencies:
+  flutter:
+    sdk: flutter
+  lazy_load_scrollview: ^1.3.0
+  skeleton_text: ^3.0.1
+  flutter_staggered_grid_view: ^0.7.0
+  provider: ^6.1.0
+  http: ^1.2.0
+  shared_preferences: ^2.0.15
+  flutter_svg: ^2.2.3
+  cached_network_image: ^3.2.3
+  google_fonts: ^8.0.0
+  url_launcher: ^6.1.6
+  firebase_core: ^2.30.0
+  firebase_auth: ^4.17.0
+  cloud_firestore: ^4.15.0
+  cupertino_icons: ^1.0.8
+  image_picker: ^1.0.7
+  firebase_storage: ^11.6.0
+  flutter_contacts: ^1.1.7
+  permission_handler: ^11.3.0
+  sqflite: ^2.3.0
+  path: ^1.8.3
+
+dev_dependencies:
+  flutter_test:
+    sdk: flutter
+  flutter_lints: ^6.0.0
+  flutter_native_splash: ^2.4.0
+  flutter_launcher_icons: ^0.13.1
+
+flutter:
+  uses-material-design: true
+
+  assets:
+    - assets/fonts/
+    - assets/images/
+    - assets/2244-7248-animated-login-character.riv
+
+  fonts:
+    - family: FiraCode
+      fonts:
+        - asset: assets/fonts/Fira_Code/static/FiraCode-Light.ttf
+          weight: 300
+        - asset: assets/fonts/Fira_Code/static/FiraCode-Regular.ttf
+          weight: 400
+        - asset: assets/fonts/Fira_Code/static/FiraCode-Medium.ttf
+          weight: 500
+        - asset: assets/fonts/Fira_Code/static/FiraCode-SemiBold.ttf
+          weight: 600
+        - asset: assets/fonts/Fira_Code/static/FiraCode-Bold.ttf
+          weight: 700
+
+    - family: Poppins
+      fonts:
+        - asset: assets/fonts/Poppins/Poppins-Thin.ttf
+          weight: 100
+        - asset: assets/fonts/Poppins/Poppins-ExtraLight.ttf
+          weight: 200
+        - asset: assets/fonts/Poppins/Poppins-Light.ttf
+          weight: 300
+        - asset: assets/fonts/Poppins/Poppins-Regular.ttf
+          weight: 400
+        - asset: assets/fonts/Poppins/Poppins-Medium.ttf
+          weight: 500
+        - asset: assets/fonts/Poppins/Poppins-SemiBold.ttf
+          weight: 600
+        - asset: assets/fonts/Poppins/Poppins-Bold.ttf
+          weight: 700
+        - asset: assets/fonts/Poppins/Poppins-ExtraBold.ttf
+          weight: 800
+        - asset: assets/fonts/Poppins/Poppins-Black.ttf
+          weight: 900
+        - asset: assets/fonts/Poppins/Poppins-Italic.ttf
+          style: italic
+        - asset: assets/fonts/Poppins/Poppins-BoldItalic.ttf
+          weight: 700
+          style: italic
+
+    - family: Montserrat
+      fonts:
+        - asset: assets/fonts/Montserrat/static/Montserrat-Thin.ttf
+          weight: 100
+        - asset: assets/fonts/Montserrat/static/Montserrat-Light.ttf
+          weight: 300
+        - asset: assets/fonts/Montserrat/static/Montserrat-Regular.ttf
+          weight: 400
+        - asset: assets/fonts/Montserrat/static/Montserrat-Medium.ttf
+          weight: 500
+        - asset: assets/fonts/Montserrat/static/Montserrat-Bold.ttf
+          weight: 700
+        - asset: assets/fonts/Montserrat/static/Montserrat-Italic.ttf
+          style: italic
+
+    - family: OpenSans
+      fonts:
+        - asset: assets/fonts/Open_Sans/static/OpenSans-Regular.ttf
+          weight: 400
+        - asset: assets/fonts/Open_Sans/static/OpenSans-Medium.ttf
+          weight: 500
+        - asset: assets/fonts/Open_Sans/static/OpenSans-SemiBold.ttf
+          weight: 600
+        - asset: assets/fonts/Open_Sans/static/OpenSans-Bold.ttf
+          weight: 700
+        - asset: assets/fonts/Open_Sans/static/OpenSans-Italic.ttf
+          style: italic
+
+    - family: PlayfairDisplay
+      fonts:
+        - asset: assets/fonts/Playfair_Display/static/PlayfairDisplay-Regular.ttf
+          weight: 400
+
+    - family: Lato
+      fonts:
+        - asset: assets/fonts/Lato/Lato-Regular.ttf
+          weight: 400
+        - asset: assets/fonts/Lato/Lato-Bold.ttf
+          weight: 700
+
+    - family: Roboto
+      fonts:
+        - asset: assets/fonts/Roboto/static/Roboto-Regular.ttf
+          weight: 400
+
+# 👇 MUST BE OUTSIDE flutter
+flutter_native_splash:
+  color: "#ffffff"
+  image: assets/images/Ex_logo.png
+
+  android: true
+  ios: true
+
+  android_12:
+    image: assets/images/Ex_logo.png
+    icon_background_color: "#ffffff"
+
+flutter_launcher_icons:
+  android: true
+  ios: true
+  image_path: "assets/images/logo.png"
