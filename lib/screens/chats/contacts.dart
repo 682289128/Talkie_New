@@ -1,8 +1,11 @@
 import 'package:flutter/material.dart';
 import 'package:talkie_new/screens/chats/addContact_screen.dart';
-import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:firebase_auth/firebase_auth.dart';
 import 'package:talkie_new/screens/chats/message_screen.dart';
+import 'package:talkie_new/database/db_helper.dart';
+import 'dart:io';
+import 'dart:async';
+import 'package:talkie_new/services/contact_syn_service.dart';
 
 class Contacts extends StatefulWidget {
   const Contacts({Key? key}) : super(key: key);
@@ -14,8 +17,28 @@ class Contacts extends StatefulWidget {
 class _ContactsState extends State<Contacts>
     with SingleTickerProviderStateMixin {
   bool _isSearching = false;
+  bool _isLoading = true;
   final TextEditingController _searchController = TextEditingController();
   String _searchText = "";
+  List<Map<String, dynamic>> contacts = [];
+
+  Future<void> loadContactsFromSQLite() async {
+    final user = FirebaseAuth.instance.currentUser;
+    if (user == null) return;
+
+    final data = await DBHelper().database;
+
+    final result = await data.query(
+      'contacts',
+      orderBy: 'name COLLATE NOCASE ASC',
+    );
+    print("📦 SQLITE CONTACTS: $result");
+    setState(() {
+      contacts = result;
+    });
+  }
+
+
 
   @override
   void initState() {
@@ -26,26 +49,29 @@ class _ContactsState extends State<Contacts>
         _searchText = _searchController.text.toLowerCase().trim();
       });
     });
+
+    loadContactsFromSQLite(); // ONLY LOCAL DB
+
   }
 
-  Stream<QuerySnapshot> getContacts() {
-    final user = FirebaseAuth.instance.currentUser;
+  Future<void> initializeContacts() async {
+    setState(() => _isLoading = true);
 
-    if (user == null) {
-      throw Exception("User not logged in");
+    try {
+      await loadContactsFromSQLite();
+      print("✅ Load from SQLite done");
+    } catch (e) {
+      print("❌ ERROR: $e");
     }
 
-    return FirebaseFirestore.instance
-        .collection("users")
-        .doc(user.uid)
-        .collection("contacts")
-        .orderBy("addedAt", descending: true)
-        .snapshots();
+    setState(() => _isLoading = false);
   }
 
-  TextSpan highlightText(String source, String query) {
+  TextSpan highlightText(String source, String query, {TextStyle? baseStyle}) {
+    baseStyle ??= TextStyle(color: Colors.black87);
+
     if (query.isEmpty) {
-      return TextSpan(text: source, style: TextStyle(color: Colors.black));
+      return TextSpan(text: source, style: baseStyle);
     }
 
     final lowerSource = source.toLowerCase();
@@ -59,7 +85,7 @@ class _ContactsState extends State<Contacts>
       if (index < 0) {
         spans.add(TextSpan(
           text: source.substring(start),
-          style: TextStyle(color: Colors.black),
+          style: baseStyle,
         ));
         break;
       }
@@ -67,16 +93,14 @@ class _ContactsState extends State<Contacts>
       if (index > start) {
         spans.add(TextSpan(
           text: source.substring(start, index),
-          style: TextStyle(color: Colors.black),
+          style: baseStyle,
         ));
       }
 
       spans.add(TextSpan(
         text: source.substring(index, index + query.length),
         style: TextStyle(
-          color: Colors.blue,
-          fontWeight: FontWeight.bold,
-        ),
+            color: Colors.blue, fontWeight: FontWeight.bold, fontSize: 16),
       ));
 
       start = index + query.length;
@@ -237,166 +261,124 @@ class _ContactsState extends State<Contacts>
       ),
       body: Column(
         children: [
-          // CONTACT COUNT TEXT
+          // CONTACT COUNT TEXT (NOW FROM SQLITE ONLY)
           Container(
             alignment: Alignment.centerLeft,
             padding: EdgeInsets.symmetric(horizontal: 16, vertical: 10),
-            child: StreamBuilder<QuerySnapshot>(
-              stream: getContacts(),
-              builder: (context, snapshot) {
-                if (!snapshot.hasData) {
-                  return Text(
-                    "0 Contacts",
-                    style: TextStyle(
-                      fontSize: 18,
-                      fontWeight: FontWeight.bold,
-                      color: Color(0XFF2563EB),
-                    ),
-                  );
-                }
-
-                final count = snapshot.data!.docs.length;
-
-                return Text(
-                  "$count Contacts",
-                  style: TextStyle(
-                    fontSize: 18,
-                    fontWeight: FontWeight.bold,
-                    color: Color(0XFF2563EB),
-                  ),
-                );
-              },
+            child: Text(
+              "${contacts.length} Contacts",
+              style: TextStyle(
+                fontSize: 18,
+                fontWeight: FontWeight.bold,
+                color: Color(0XFF2563EB),
+              ),
             ),
           ),
 
-          // CONTACT LIST
+          // CONTACT LIST (ONLY SQLITE)
           Expanded(
-            child: StreamBuilder<QuerySnapshot>(
-              stream: getContacts(),
-              builder: (context, snapshot) {
-                if (snapshot.connectionState == ConnectionState.waiting) {
-                  return Center(child: CircularProgressIndicator());
-                }
+            child: contacts.isEmpty
+                ? Center(child: Text("No contacts found"))
+                : Builder(
+                    builder: (context) {
+                      // FILTER SEARCH
+                      final filteredContacts = contacts.where((c) {
+                        final name = (c["name"] ?? "").toLowerCase();
+                        final phone = (c["phone"] ?? "").toLowerCase();
 
-                if (snapshot.hasError) {
-                  return Center(child: Text("Error loading contacts"));
-                }
+                        return name.contains(_searchText) ||
+                            phone.contains(_searchText);
+                      }).toList();
 
-                final allDocs = snapshot.data!.docs;
+                      return ListView.builder(
+                        itemCount: filteredContacts.length,
+                        itemBuilder: (context, index) {
+                          final data = filteredContacts[index];
 
-                final docs = allDocs.where((doc) {
-                  final data = doc.data() as Map<String, dynamic>;
-
-                  final name = (data["name"] ?? "").toString().toLowerCase();
-                  final phone = (data["phone"] ?? "").toString().toLowerCase();
-
-                  final query = _searchText.toLowerCase();
-
-                  return name.contains(query) || phone.contains(query);
-                }).toList();
-
-                if (docs.isEmpty) {
-                  return Center(child: Text("No contacts found"));
-                }
-
-                return ListView.builder(
-                  itemCount: docs.length,
-                  itemBuilder: (context, index) {
-                    final data = docs[index].data() as Map<String, dynamic>;
-
-                    return InkWell(
-                      onTap: () {
-                        Navigator.push(
-                          context,
-                          MaterialPageRoute(
-                            builder: (context) => Message(
-                              contactName: (data["name"] ?? "").toString(),
-                              contactUserId: (data["userId"] ?? "").toString(),
-                              contactImage: (data["image"] ?? "").toString(),
-                            ),
-                          ),
-                        );
-                      },
-                      child: Container(
-                        margin:
-                            EdgeInsets.symmetric(horizontal: 12, vertical: 6),
-                        padding: EdgeInsets.all(12),
-                        decoration: BoxDecoration(
-                          color: Colors.white,
-                          borderRadius: BorderRadius.circular(4),
-                        ),
-                        child: Row(
-                          children: [
-                            CircleAvatar(
-                              radius: 24,
-                              backgroundColor: Colors.grey.shade200,
-                              child: FutureBuilder<DocumentSnapshot>(
-                                future: FirebaseFirestore.instance
-                                    .collection("users")
-                                    .doc(data["userId"])
-                                    .get(),
-                                builder: (context, snapshot) {
-                                  if (snapshot.connectionState ==
-                                      ConnectionState.waiting) {
-                                    return CircularProgressIndicator(
-                                        strokeWidth: 2);
-                                  }
-
-                                  if (snapshot.hasData &&
-                                      snapshot.data!.exists) {
-                                    final userData = snapshot.data!.data()
-                                        as Map<String, dynamic>;
-
-                                    final imageUrl = userData["image"];
-
-                                    if (imageUrl != null &&
-                                        imageUrl.isNotEmpty) {
-                                      return ClipOval(
-                                        child: Image.network(
-                                          imageUrl,
-                                          width: 48,
-                                          height: 48,
-                                          fit: BoxFit.cover,
-                                        ),
-                                      );
-                                    }
-                                  }
-
-                                  // fallback to first letter
-                                  return Text(
-                                    data["name"] != null &&
-                                            data["name"].isNotEmpty
-                                        ? data["name"][0]
-                                        : "?",
-                                  );
-                                },
-                              ),
-                            ),
-                            SizedBox(width: 10),
-                            Column(
-                              crossAxisAlignment: CrossAxisAlignment.start,
-                              children: [
-                                RichText(
-                                  text: highlightText(
-                                    data["name"] ?? "No Name",
-                                    _searchText,
+                          return InkWell(
+                            onTap: () {
+                              Navigator.push(
+                                context,
+                                MaterialPageRoute(
+                                  builder: (context) => Message(
+                                    contactName: data["name"] ?? "",
+                                    contactUserId: data["userId"] ?? "",
+                                    contactImage: data["imagePath"] ?? "",
                                   ),
                                 ),
-                                Text(
-                                  data["phone"] ?? "",
-                                  style: TextStyle(color: Colors.grey),
-                                ),
-                              ],
+                              );
+                            },
+                            child: Container(
+                              margin: EdgeInsets.symmetric(
+                                  horizontal: 12, vertical: 6),
+                              padding: EdgeInsets.all(12),
+                              decoration: BoxDecoration(
+                                color: Colors.white,
+                                borderRadius: BorderRadius.circular(4),
+                              ),
+                              child: Row(
+                                children: [
+                                  CircleAvatar(
+                                    radius: 24,
+                                    backgroundColor: Colors.grey.shade200,
+                                    backgroundImage:
+                                        (data["imagePath"] != null &&
+                                                data["imagePath"]
+                                                    .toString()
+                                                    .isNotEmpty)
+                                            ? FileImage(File(data["imagePath"]))
+                                            : null,
+                                    child: (data["imagePath"] == null ||
+                                            data["imagePath"]
+                                                .toString()
+                                                .isEmpty)
+                                        ? Text(
+                                            data["name"] != null &&
+                                                    data["name"].isNotEmpty
+                                                ? data["name"][0]
+                                                : "?",
+                                          )
+                                        : null,
+                                  ),
+                                  SizedBox(width: 10),
+                                  Column(
+                                    crossAxisAlignment:
+                                        CrossAxisAlignment.start,
+                                    children: [
+                                      RichText(
+                                        text: highlightText(
+                                          data["name"] ?? "",
+                                          _searchText,
+                                          baseStyle: TextStyle(
+                                            color: const Color.fromARGB(
+                                                255, 37, 37, 37),
+                                            fontSize: 16,
+                                            fontWeight: FontWeight.normal,
+                                          ),
+                                        ),
+                                      ),
+                                      RichText(
+                                        text: highlightText(
+                                          data["phone"] ?? "",
+                                          _searchText,
+                                          baseStyle: TextStyle(
+                                            color: Colors.grey,
+                                            fontSize: 14,
+                                            fontWeight: FontWeight.normal,
+                                          ),
+                                        ),
+                                      ),
+                                    ],
+                                  ),
+                                ],
+                              ),
                             ),
-                          ],
-                        ),
-                      ),
-                    );
-                  },
-                );
-              },
-            ),
-          ),
+                          );
+                        },
+                      );
+                    },
+                  ),
+          )
         ],
       ),
     );

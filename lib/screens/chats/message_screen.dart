@@ -1,6 +1,9 @@
 import 'package:flutter/material.dart';
 import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:firebase_auth/firebase_auth.dart';
+import 'package:talkie_new/services/chat_service.dart';
+import 'package:talkie_new/widgets/message_bubble.dart';
+import 'package:flutter/services.dart';
 
 class Message extends StatefulWidget {
   final String contactName;
@@ -19,27 +22,12 @@ class Message extends StatefulWidget {
 }
 
 class _MessageState extends State<Message> {
+  Map<int, double> swipeOffset = {};
+  String? highlightedMessageId;
+  final ChatService _chatService = ChatService();
   final TextEditingController _controller = TextEditingController();
   final ScrollController _scrollController = ScrollController();
   final currentUser = FirebaseAuth.instance.currentUser!;
-
-String getChatId(String user1, String user2) {
-  List<String> ids = [user1, user2];
-  ids.sort(); // ensures same order always
-  return "${ids[0]}_${ids[1]}";
-}
-
-  Stream<QuerySnapshot> getMessagesStream() {
-    final currentUser = FirebaseAuth.instance.currentUser!;
-    final chatId = getChatId(currentUser.uid, widget.contactUserId);
-
-    return FirebaseFirestore.instance
-        .collection("chats")
-        .doc(chatId)
-        .collection("messages")
-        .orderBy("date", descending: false)
-        .snapshots();
-  }
 
   Map<String, dynamic>?
       replyingTo; // keeps track of the message being replied to
@@ -57,118 +45,37 @@ String getChatId(String user1, String user2) {
 
   bool reverseChat = true;
 
-  // WhatsApp-style message data: text, isMe, time, sentStatus
-  List<Map<String, dynamic>> messages = [
-    {
-      "text": "Hey 👋",
-      "isMe": false,
-      "time": "10:30 PM",
-      "status": "received",
-      "date": DateTime.now().subtract(Duration(days: 1))
-    },
-    {
-      "text": "Hello bro!",
-      "isMe": true,
-      "time": "10:31 PM",
-      "status": "sent",
-      "date": DateTime.now().subtract(Duration(days: 1))
-    },
-    {
-      "text": "How is Talkie going? 😎",
-      "isMe": false,
-      "time": "10:32 PM",
-      "status": "received",
-      "date": DateTime.now()
-    },
-    {
-      "text":
-          "Talkie is moving smoothly dude! Never seen something like this 😎",
-      "isMe": true,
-      "time": "10:32 PM",
-      "status": "received",
-      "date": DateTime.now()
-    },
-  ];
-
   void sendMessage() async {
     if (_controller.text.trim().isEmpty) return;
 
-    final currentUser = FirebaseAuth.instance.currentUser!;
-final chatId = getChatId(currentUser.uid, widget.contactUserId);
+    final messageText = _controller.text.trim();
 
-await FirebaseFirestore.instance
-    .collection("chats")
-    .doc(chatId)
-    .set({
-  "participants": [currentUser.uid, widget.contactUserId],
-  "lastMessage": _controller.text.trim(),
-  "updatedAt": FieldValue.serverTimestamp(),
-}, SetOptions(merge: true));
-
-    final messageData = {
-      "text": _controller.text.trim(),
-      "senderId": currentUser.uid,
-      "receiverId": widget.contactUserId,
-      "time": TimeOfDay.now().format(context),
-      "status": "sent",
-      "replyTo": replyingTo?["text"],
-      "date": FieldValue.serverTimestamp(),
-    };
-
-    setState(() {
-      if (editingIndex != null) {
-        // Update existing message
-        messages[editingIndex!] = {
-          ...messages[editingIndex!],
-          "text": _controller.text.trim(),
-        };
-        editingIndex = null; // reset after editing
-      } else {
-        // Add new message
-        messages.add({
-          "text": _controller.text.trim(),
-          "isMe": true,
-          "time": TimeOfDay.now().format(context),
-          "status": "sent",
-          "replyTo": replyingTo?["text"],
-          "date": DateTime.now(),
-        });
-      }
-
-      replyingTo = null; // reset reply
-    });
-
-    await FirebaseFirestore.instance
-        .collection("chats")
-        .doc(chatId)
-        .collection("messages")
-        .add(messageData);
+    await _chatService.sendMessage(
+      senderId: currentUser.uid,
+      receiverId: widget.contactUserId,
+      text: messageText,
+      replyTo: replyingTo?["text"],
+    );
 
     _controller.clear();
 
-    // Auto-scroll to bottom
-    Future.delayed(Duration(milliseconds: 100), () {
-      _scrollController.animateTo(
-        _scrollController.position.maxScrollExtent,
-        duration: Duration(milliseconds: 300),
-        curve: Curves.easeOut,
-      );
+    setState(() {
+      replyingTo = null;
+      replyingToIndex = null;
+      highlightedMessageId = null;
+      // 🔥 RESET swipe UI after sending reply
+      swipeOffset.clear();
     });
 
-    // Update status simulation for new messages
-    if (editingIndex == null) {
-      Future.delayed(Duration(seconds: 1), () {
-        setState(() {
-          messages.last["status"] = "delivered";
-        });
-      });
-
-      Future.delayed(Duration(seconds: 2), () {
-        setState(() {
-          messages.last["status"] = "read";
-        });
-      });
-    }
+    Future.delayed(Duration(milliseconds: 200), () {
+      if (_scrollController.hasClients) {
+        _scrollController.animateTo(
+          _scrollController.position.maxScrollExtent,
+          duration: Duration(milliseconds: 300),
+          curve: Curves.easeOut,
+        );
+      }
+    });
   }
 
   String getDateLabel(DateTime date) {
@@ -179,7 +86,7 @@ await FirebaseFirestore.instance
     if (msgDay == today) return "Today";
     if (msgDay == today.subtract(Duration(days: 1))) return "Yesterday";
 
-    return "${date.month}/${date.day}/${date.year}"; // or use intl package for nicer formatting
+    return "${date.day}/${date.month}/${date.year}"; // or use intl package for nicer formatting
   }
 
   void openFullScreenInput() {
@@ -397,7 +304,10 @@ await FirebaseFirestore.instance
               // 🔹 MESSAGE LIST
               Expanded(
                   child: StreamBuilder<QuerySnapshot>(
-                      stream: getMessagesStream(),
+                      stream: _chatService.getMessages(
+                        currentUser.uid,
+                        widget.contactUserId,
+                      ),
                       builder: (context, snapshot) {
                         if (!snapshot.hasData) {
                           return Center(child: CircularProgressIndicator());
@@ -412,8 +322,11 @@ await FirebaseFirestore.instance
                           padding: EdgeInsets.symmetric(
                               horizontal: 12, vertical: 10),
                           itemBuilder: (context, index) {
-                            final msg =
-                                docs[index].data() as Map<String, dynamic>;
+                            final doc = docs[index];
+
+                            final msg = doc.data() as Map<String, dynamic>;
+                            final messageId = doc.id;
+
                             final bool isMe = msg["senderId"] ==
                                 FirebaseAuth.instance.currentUser!.uid;
 
@@ -422,16 +335,18 @@ await FirebaseFirestore.instance
                             // Previous message date (or null if first message)
                             final prevRaw = index < docs.length - 1
                                 ? (docs[index + 1].data()
-                                    as Map<String, dynamic>)["date"]
+                                    as Map<String, dynamic>)["createdAt"]
                                 : null;
 
                             final prevDate = (prevRaw is Timestamp)
                                 ? prevRaw.toDate()
                                 : null;
 
-                            final currDate = (msg["date"] is Timestamp)
-                                ? (msg["date"] as Timestamp).toDate()
-                                : DateTime.now();
+                            final currDate =
+                                (msg["createdAt"] as Timestamp?)?.toDate() ??
+                                    DateTime.now();
+                            final isDeleted = msg["isDeleted"] == 1;
+                            final isEdited = msg["edited"] == 1;
 
                             List<Widget> widgets = [];
 
@@ -466,397 +381,156 @@ await FirebaseFirestore.instance
                             widgets.add(
                               StatefulBuilder(
                                 builder: (context, setInnerState) {
-                                  return LongPressDraggable<int>(
-                                    data: index,
-                                    dragAnchorStrategy:
-                                        pointerDragAnchorStrategy,
-                                    onDragStarted: () {
-                                      setState(() {
-                                        deletingIndex = index;
-                                        showTrash = true;
-                                      });
-                                    },
-                                    onDraggableCanceled: (_, __) {
-                                      setState(() {
-                                        deletingIndex = null;
-                                        showTrash = false;
-                                      });
-                                    },
-                                    onDragEnd: (_) {
-                                      setState(() {
-                                        deletingIndex = null;
-                                        showTrash = false;
-                                      });
-                                    },
-                                    feedback: Material(
-                                      color: Colors.transparent,
-                                      child: Opacity(
-                                        opacity: 0.8,
-                                        child: Transform.translate(
-                                          offset: Offset(_dragOffset, 0),
-                                          child: Align(
-                                            alignment: isMe
-                                                ? Alignment.centerRight
-                                                : Alignment.centerLeft,
-                                            child: Container(
-                                              margin: EdgeInsets.symmetric(
-                                                  vertical: 4),
-                                              padding: EdgeInsets.symmetric(
-                                                horizontal: 14,
-                                                vertical: 10,
-                                              ),
-                                              constraints: BoxConstraints(
-                                                maxWidth: MediaQuery.of(context)
-                                                        .size
-                                                        .width *
-                                                    0.75,
-                                              ),
-                                              decoration: BoxDecoration(
-                                                color: replyingToIndex == index
-                                                    ? Colors.grey[300]
-                                                    : (isMe
-                                                        ? Color(0XFF2563EB)
-                                                        : Colors.white),
-                                                borderRadius: BorderRadius.only(
-                                                  topLeft: Radius.circular(16),
-                                                  topRight: Radius.circular(16),
-                                                  bottomLeft: isMe
-                                                      ? Radius.circular(16)
-                                                      : Radius.circular(4),
-                                                  bottomRight: isMe
-                                                      ? Radius.circular(4)
-                                                      : Radius.circular(16),
-                                                ),
-                                                boxShadow: [
-                                                  BoxShadow(
-                                                    color: Colors.black
-                                                        .withOpacity(
-                                                      0.05,
-                                                    ),
-                                                    blurRadius: 5,
-                                                    offset: Offset(0, 2),
-                                                  ),
-                                                ],
-                                              ),
-                                              child: Column(
-                                                crossAxisAlignment: isMe
-                                                    ? CrossAxisAlignment.end
-                                                    : CrossAxisAlignment.start,
-                                                children: [
-                                                  if (msg["replyTo"] != null)
-                                                    Container(
-                                                      padding:
-                                                          EdgeInsets.symmetric(
-                                                        horizontal: 8,
-                                                        vertical: 6,
-                                                      ),
-                                                      margin: EdgeInsets.only(
-                                                        bottom: 4,
-                                                      ),
-                                                      decoration: BoxDecoration(
-                                                        color: Colors.grey[200],
-                                                        borderRadius:
-                                                            BorderRadius
-                                                                .circular(8),
-                                                      ),
-                                                      constraints:
-                                                          BoxConstraints(
-                                                        maxWidth: MediaQuery.of(
-                                                              context,
-                                                            ).size.width *
-                                                            0.65,
-                                                      ),
-                                                      child: Row(
-                                                        crossAxisAlignment:
-                                                            CrossAxisAlignment
-                                                                .start,
-                                                        children: [
-                                                          Container(
-                                                            width: 4,
-                                                            margin:
-                                                                EdgeInsets.only(
-                                                              right: 6,
-                                                            ),
-                                                            decoration:
-                                                                BoxDecoration(
-                                                              color:
-                                                                  Colors.green,
-                                                              borderRadius:
-                                                                  BorderRadius
-                                                                      .circular(
-                                                                2,
-                                                              ),
-                                                            ),
-                                                          ),
-                                                          Expanded(
-                                                            child: Text(
-                                                              msg["replyTo"],
-                                                              style: TextStyle(
-                                                                fontSize: 12,
-                                                                fontStyle:
-                                                                    FontStyle
-                                                                        .italic,
-                                                                color: Colors
-                                                                    .black87,
-                                                              ),
-                                                              softWrap: true,
-                                                              maxLines: 3,
-                                                              overflow:
-                                                                  TextOverflow
-                                                                      .ellipsis,
-                                                            ),
-                                                          ),
-                                                        ],
-                                                      ),
-                                                    ),
-                                                  Text(
-                                                    msg["text"] ?? "" ?? "",
-                                                    style: TextStyle(
-                                                      color: isMe
-                                                          ? Colors.white
-                                                          : Colors.black87,
-                                                      fontSize: 14,
-                                                    ),
-                                                  ),
-                                                  SizedBox(height: 4),
-                                                  Row(
-                                                    mainAxisSize:
-                                                        MainAxisSize.min,
-                                                    mainAxisAlignment: isMe
-                                                        ? MainAxisAlignment.end
-                                                        : MainAxisAlignment
-                                                            .start,
-                                                    children: [
-                                                      Text(
-                                                        msg["time"] ?? "",
-                                                        style: TextStyle(
-                                                          fontSize: 10,
-                                                          color: isMe
-                                                              ? Colors.white70
-                                                              : Colors.grey,
-                                                        ),
-                                                      ),
-                                                      if (isMe)
-                                                        SizedBox(width: 4),
-                                                      if (isMe)
-                                                        messageStatusIcon(
-                                                          msg["status"] ??
-                                                              "sent",
-                                                        ),
-                                                    ],
-                                                  ),
-                                                ],
-                                              ),
-                                            ),
-                                          ),
-                                        ),
-                                      ),
-                                    ),
-                                    child: GestureDetector(
-                                      onDoubleTap: isMe
-                                          ? () {
-                                              setState(() {
-                                                editingIndex = index;
-                                                _controller.text =
-                                                    msg["text"] ?? "";
-                                                _controller.selection =
-                                                    TextSelection.fromPosition(
-                                                  TextPosition(
-                                                    offset:
-                                                        _controller.text.length,
-                                                  ),
-                                                );
-                                                Future.delayed(
-                                                  Duration(milliseconds: 100),
-                                                  () {
-                                                    _scrollController.animateTo(
-                                                      _scrollController.position
-                                                          .maxScrollExtent,
-                                                      duration: Duration(
-                                                        milliseconds: 300,
-                                                      ),
-                                                      curve: Curves.easeOut,
-                                                    );
-                                                  },
-                                                );
-                                              });
-                                            }
-                                          : null,
-                                      onHorizontalDragUpdate: (details) {
-                                        if ((isMe && details.delta.dx < 0) ||
-                                            (!isMe && details.delta.dx > 0)) {
-                                          setInnerState(() {
-                                            _dragOffset += details.delta.dx;
-                                            if (_dragOffset.abs() > 30)
-                                              _dragOffset =
-                                                  _dragOffset.sign * 100;
-                                          });
-                                        }
-                                      },
-                                      onHorizontalDragEnd: (details) {
-                                        if (_dragOffset.abs() > 20) {
-                                          setState(() {
-                                            replyingTo = msg;
-                                            replyingToIndex = index;
-                                          });
-                                        }
-                                        setInnerState(() {
-                                          _dragOffset = 0;
+                                  return LongPressDraggable<DocumentReference>(
+                                      data: docs[index].reference,
+                                      dragAnchorStrategy:
+                                          pointerDragAnchorStrategy, // ✅ keeps finger aligned
+                                      feedbackOffset:
+                                          Offset(0, 0), // ✅ removes 8–10cm gap
+                                      onDragStarted: () {
+                                        setState(() {
+                                          deletingIndex =
+                                              index; // optional (or remove completely later)
+                                          showTrash = true;
                                         });
                                       },
-                                      child: Transform.translate(
-                                        offset: Offset(_dragOffset, 0),
-                                        child: Align(
-                                          alignment: isMe
-                                              ? Alignment.centerRight
-                                              : Alignment.centerLeft,
-                                          child: Container(
-                                            margin: EdgeInsets.symmetric(
-                                                vertical: 4),
-                                            padding: EdgeInsets.symmetric(
-                                              horizontal: 14,
-                                              vertical: 10,
-                                            ),
+                                      onDraggableCanceled: (_, __) {
+                                        setState(() {
+                                          deletingIndex = null;
+                                          showTrash = false;
+                                        });
+                                      },
+                                      onDragEnd: (_) {
+                                        setState(() {
+                                          deletingIndex = null;
+                                          showTrash = false;
+                                        });
+                                      },
+                                      feedback: Material(
+                                        color: Colors.transparent,
+                                        child: Transform.translate(
+                                          offset: Offset(0,
+                                              0), // 👈 removes weird offset gap
+                                          child: ConstrainedBox(
                                             constraints: BoxConstraints(
                                               maxWidth: MediaQuery.of(context)
                                                       .size
                                                       .width *
                                                   0.75,
                                             ),
-                                            decoration: BoxDecoration(
-                                              color: replyingToIndex == index
-                                                  ? Colors.grey[300]
-                                                  : (isMe
-                                                      ? Color(0XFF2563EB)
-                                                      : Colors.white),
-                                              borderRadius: BorderRadius.only(
-                                                topLeft: Radius.circular(16),
-                                                topRight: Radius.circular(16),
-                                                bottomLeft: isMe
-                                                    ? Radius.circular(16)
-                                                    : Radius.circular(4),
-                                                bottomRight: isMe
-                                                    ? Radius.circular(4)
-                                                    : Radius.circular(16),
+                                            child: Opacity(
+                                              opacity: 0.9,
+                                              child: MessageBubble(
+                                                msg: msg,
+                                                isMe: isMe,
+                                                isReplying: false,
+                                                status: msg["status"] ?? "sent",
+                                                isHighlighted: false,
+                                                isEdited: isEdited,
+                                                isDeleted: isDeleted,
+                                                isSwiped:
+                                                    (swipeOffset[index] ?? 0)
+                                                            .abs() >
+                                                        5,
                                               ),
-                                              boxShadow: [
-                                                BoxShadow(
-                                                  color: Colors.black
-                                                      .withOpacity(0.05),
-                                                  blurRadius: 5,
-                                                  offset: Offset(0, 2),
-                                                ),
-                                              ],
-                                            ),
-                                            child: Column(
-                                              crossAxisAlignment: isMe
-                                                  ? CrossAxisAlignment.end
-                                                  : CrossAxisAlignment.start,
-                                              children: [
-                                                if (msg["replyTo"] != null)
-                                                  Container(
-                                                    padding:
-                                                        EdgeInsets.symmetric(
-                                                      horizontal: 8,
-                                                      vertical: 6,
-                                                    ),
-                                                    margin: EdgeInsets.only(
-                                                        bottom: 4),
-                                                    decoration: BoxDecoration(
-                                                      color: Colors.grey[200],
-                                                      borderRadius:
-                                                          BorderRadius.circular(
-                                                              8),
-                                                    ),
-                                                    constraints: BoxConstraints(
-                                                      maxWidth: MediaQuery.of(
-                                                            context,
-                                                          ).size.width *
-                                                          0.65,
-                                                    ),
-                                                    child: Row(
-                                                      crossAxisAlignment:
-                                                          CrossAxisAlignment
-                                                              .start,
-                                                      children: [
-                                                        Container(
-                                                          width: 4,
-                                                          margin:
-                                                              EdgeInsets.only(
-                                                            right: 6,
-                                                          ),
-                                                          decoration:
-                                                              BoxDecoration(
-                                                            color: Colors.green,
-                                                            borderRadius:
-                                                                BorderRadius
-                                                                    .circular(
-                                                              2,
-                                                            ),
-                                                          ),
-                                                        ),
-                                                        Expanded(
-                                                          child: Text(
-                                                            msg["replyTo"],
-                                                            style: TextStyle(
-                                                              fontSize: 12,
-                                                              fontStyle:
-                                                                  FontStyle
-                                                                      .italic,
-                                                              color: Colors
-                                                                  .black87,
-                                                            ),
-                                                            softWrap: true,
-                                                            maxLines: 3,
-                                                            overflow:
-                                                                TextOverflow
-                                                                    .ellipsis,
-                                                          ),
-                                                        ),
-                                                      ],
-                                                    ),
-                                                  ),
-                                                Text(
-                                                  msg["text"] ?? "",
-                                                  style: TextStyle(
-                                                    color: isMe
-                                                        ? Colors.white
-                                                        : Colors.black87,
-                                                    fontSize: 14,
-                                                  ),
-                                                ),
-                                                SizedBox(height: 4),
-                                                Row(
-                                                  mainAxisSize:
-                                                      MainAxisSize.min,
-                                                  mainAxisAlignment: isMe
-                                                      ? MainAxisAlignment.end
-                                                      : MainAxisAlignment.start,
-                                                  children: [
-                                                    Text(
-                                                      msg["time"] ?? "",
-                                                      style: TextStyle(
-                                                        fontSize: 10,
-                                                        color: isMe
-                                                            ? Colors.white70
-                                                            : Colors.grey,
-                                                      ),
-                                                    ),
-                                                    if (isMe)
-                                                      SizedBox(width: 4),
-                                                    if (isMe)
-                                                      messageStatusIcon(
-                                                          msg["status"] ??
-                                                              "sent"),
-                                                  ],
-                                                ),
-                                              ],
                                             ),
                                           ),
                                         ),
                                       ),
-                                    ),
-                                  );
+                                      child: GestureDetector(
+                                        onHorizontalDragStart: (_) {
+                                          swipeOffset[index] = 0;
+                                        },
+                                        onHorizontalDragUpdate: (details) {
+                                          setState(() {
+                                            final isMe = msg["senderId"] ==
+                                                FirebaseAuth
+                                                    .instance.currentUser!.uid;
+
+                                            final raw = swipeOffset[index] ?? 0;
+
+                                            // ✅ natural finger-follow (no inversion here)
+                                            double next =
+                                                raw + details.delta.dx;
+
+                                            // ✅ flip ONLY display direction (WhatsApp style)
+                                            swipeOffset[index] = isMe
+                                                ? next.clamp(-80, 0)
+                                                : next.clamp(0, 80);
+                                          });
+                                        },
+                                        onHorizontalDragEnd: (_) {
+                                          final offset =
+                                              swipeOffset[index] ?? 0;
+
+                                          setState(() {
+                                            if (offset.abs() > 50) {
+                                              replyingTo = msg;
+                                              replyingToIndex = index;
+                                            }
+
+                                            swipeOffset[index] = 0;
+                                          });
+                                        },
+                                        child: Transform.translate(
+                                          offset: Offset(
+                                            swipeOffset[index] ?? 0,
+                                            0,
+                                          ),
+                                          child: AnimatedContainer(
+                                            duration:
+                                                Duration(milliseconds: 120),
+                                            curve: Curves.easeOut,
+                                            child: MessageBubble(
+                                              msg: msg,
+                                              isMe: isMe,
+                                              status: msg["status"] ?? "sent",
+                                              isReplying:
+                                                  replyingToIndex == index,
+                                              isHighlighted:
+                                                  highlightedMessageId ==
+                                                      messageId,
+                                              isEdited: isEdited,
+                                              isDeleted: isDeleted,
+                                              isSwiped:
+                                                  (swipeOffset[index] ?? 0)
+                                                          .abs() >
+                                                      5,
+                                              onDoubleTap: isMe
+                                                  ? () {
+                                                      setState(() {
+                                                        if (editingIndex ==
+                                                            index) {
+                                                          // 🔥 CANCEL EDIT MODE (NEW FEATURE YOU WANTED)
+                                                          editingIndex = null;
+                                                          highlightedMessageId =
+                                                              null;
+                                                          _controller.clear();
+                                                          return;
+                                                        }
+
+                                                        editingIndex = index;
+                                                        highlightedMessageId =
+                                                            messageId;
+
+                                                        _controller.text =
+                                                            msg["text"] ?? "";
+                                                        _controller.selection =
+                                                            TextSelection
+                                                                .fromPosition(
+                                                          TextPosition(
+                                                              offset:
+                                                                  _controller
+                                                                      .text
+                                                                      .length),
+                                                        );
+                                                      });
+                                                    }
+                                                  : null,
+                                            ),
+                                          ),
+                                        ),
+                                      ));
                                 },
                               ),
                             );
@@ -869,34 +543,56 @@ await FirebaseFirestore.instance
                         );
                       })),
               if (replyingTo != null)
-                Container(
-                  padding: EdgeInsets.symmetric(horizontal: 12, vertical: 6),
-                  margin: EdgeInsets.only(bottom: 8),
-                  decoration: BoxDecoration(
-                    color: Colors.grey[200],
-                    borderRadius: BorderRadius.circular(12),
-                  ),
-                  child: Row(
-                    children: [
-                      Expanded(
-                        child: Text(
-                          "Replying to: ${replyingTo!['text']}",
-                          style: TextStyle(
-                            fontSize: 12,
-                            fontStyle: FontStyle.italic,
+                Positioned(
+                  bottom: 80,
+                  left: 0,
+                  right: 0,
+                  child: Align(
+                    alignment: Alignment.centerLeft,
+                    child: ConstrainedBox(
+                      constraints: BoxConstraints(
+                        maxWidth: 310, // 👈 adjust (200–300 feels good)
+                      ),
+                      child: Container(
+                        margin: EdgeInsets.symmetric(horizontal: 10),
+                        padding:
+                            EdgeInsets.symmetric(horizontal: 12, vertical: 6),
+                        decoration: BoxDecoration(
+                          color: const Color.fromARGB(255, 199, 224, 245),
+                          borderRadius: BorderRadius.circular(8),
+                          border: Border(
+                            left: BorderSide(
+                              color: Colors.green,
+                              width: 4,
+                            ),
                           ),
                         ),
+                        child: Row(
+                          children: [
+                            Expanded(
+                              child: Text(
+                                replyingTo?['text'] ?? "",
+                                maxLines: 4,
+                                overflow: TextOverflow.ellipsis,
+                                style: TextStyle(
+                                  fontSize: 14,
+                                  fontStyle: FontStyle.italic,
+                                ),
+                              ),
+                            ),
+                            GestureDetector(
+                              onTap: () {
+                                setState(() {
+                                  replyingTo = null;
+                                  replyingToIndex = null;
+                                });
+                              },
+                              child: Icon(Icons.close, size: 16),
+                            ),
+                          ],
+                        ),
                       ),
-                      GestureDetector(
-                        onTap: () {
-                          setState(() {
-                            replyingTo = null; // cancel reply
-                            replyingToIndex = null;
-                          });
-                        },
-                        child: Icon(Icons.close, size: 16),
-                      ),
-                    ],
+                    ),
                   ),
                 ),
               // 🔹 INPUT FIELD
@@ -974,27 +670,50 @@ await FirebaseFirestore.instance
               bottom: 0,
               left: 0,
               right: 0,
-              child: DragTarget<int>(
-                onWillAccept: (data) => data != null,
-                onAccept: (data) {
-                  setState(() {
-                    messages.removeAt(data);
-                    if (replyingToIndex == data) {
-                      replyingTo = null;
-                      replyingToIndex = null;
-                    }
-                    if (editingIndex == data) editingIndex = null;
+              child: DragTarget<DocumentReference>(
+                onWillAccept: (data) {
+                  HapticFeedback
+                      .lightImpact(); // 👈 subtle vibration when hovering
+                  return data != null;
+                },
+                onAccept: (DocumentReference ref) async {
+                  HapticFeedback.heavyImpact(); // 👈 strong vibration on delete
 
-                    deletingIndex = null;
+                  await _chatService.deleteMessage(ref);
+
+                  setState(() {
                     showTrash = false;
+                    deletingIndex = null;
                   });
                 },
                 builder: (context, candidateData, rejectedData) {
-                  return Container(
+                  final isActive = candidateData.isNotEmpty;
+
+                  return AnimatedContainer(
+                    duration: Duration(milliseconds: 200),
                     height: 100,
-                    color: Colors.red[400],
+                    decoration: BoxDecoration(
+                      color: isActive ? Colors.red[600] : Colors.red[400],
+                      boxShadow: isActive
+                          ? [
+                              BoxShadow(
+                                color: Colors.redAccent.withOpacity(0.6),
+                                blurRadius: 20,
+                                spreadRadius: 2,
+                              )
+                            ]
+                          : [],
+                    ),
                     child: Center(
-                      child: Icon(Icons.delete, color: Colors.white, size: 36),
+                      child: AnimatedScale(
+                        duration: Duration(milliseconds: 150),
+                        scale: isActive ? 1.2 : 1.0,
+                        child: Icon(
+                          Icons.delete,
+                          color: Colors.white,
+                          size: 36,
+                        ),
+                      ),
                     ),
                   );
                 },

@@ -15,55 +15,57 @@ class ContactPermissionScreen extends StatefulWidget {
 }
 
 class _ContactPermissionScreenState extends State<ContactPermissionScreen> {
+  bool _isLoading = false;
+  double _progress = 0;
   @override
-void initState() {
-  super.initState();
+  void initState() {
+    super.initState();
 
-  // 🔥 AUTO RUN ONLY DURING LOGIN
-  if (widget.fromLogin) {
-    WidgetsBinding.instance.addPostFrameCallback((_) {
-      requestPermission(context);
-    });
-  }
-}
-
-  void requestPermission(BuildContext context) async {
-  var status = await Permission.contacts.status;
-
-  // 🔥 LOGIN FLOW (NO UI)
-  if (widget.fromLogin) {
-    if (!status.isGranted) {
-      status = await Permission.contacts.request();
+    // 🔥 AUTO RUN ONLY DURING LOGIN
+    if (widget.fromLogin) {
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        requestPermission(context);
+      });
     }
+  }
 
-    if (!status.isGranted) {
-      // ❌ don't stay on this screen → go to chat
-      if (!context.mounted) return;
+  Future<void> requestPermission(BuildContext context) async {
+    var status = await Permission.contacts.status;
 
-      Navigator.pushReplacement(
-        context,
-        MaterialPageRoute(builder: (context) => Chat()),
-      );
+    // 🔥 LOGIN FLOW (NO UI)
+    if (widget.fromLogin) {
+      if (!status.isGranted) {
+        status = await Permission.contacts.request();
+      }
+
+      if (!status.isGranted) {
+        // ❌ don't stay on this screen → go to chat
+        if (!context.mounted) return;
+
+        Navigator.pushReplacement(
+          context,
+          MaterialPageRoute(builder: (context) => Chat()),
+        );
+        return;
+      }
+
+      // ✅ permission granted → sync immediately
+      List<Contact> contacts =
+          await FlutterContacts.getContacts(withProperties: true);
+
+      List<String> phoneNumbers = [];
+
+      for (var contact in contacts) {
+        for (var phone in contact.phones) {
+          phoneNumbers.add(normalizePhone(phone.number));
+        }
+      }
+
+      await matchContacts(phoneNumbers, context);
       return;
     }
 
-    // ✅ permission granted → sync immediately
-    List<Contact> contacts =
-        await FlutterContacts.getContacts(withProperties: true);
-
-    List<String> phoneNumbers = [];
-
-    for (var contact in contacts) {
-      for (var phone in contact.phones) {
-        phoneNumbers.add(normalizePhone(phone.number));
-      }
-    }
-
-    await matchContacts(phoneNumbers, context);
-    return;
-  }
-
-  // 🔵 REGISTRATION FLOW (KEEP YOUR UI)
+    // 🔵 REGISTRATION FLOW (KEEP YOUR UI)
     print("INITIAL STATUS: $status");
 
     if (!status.isGranted) {
@@ -222,92 +224,145 @@ void initState() {
     }
   }
 
- @override
-Widget build(BuildContext context) {
-  // 🔥 HIDE UI COMPLETELY DURING LOGIN
-  if (widget.fromLogin) {
-    return const Scaffold(
+  @override
+  Widget build(BuildContext context) {
+    // 🔥 HIDE UI COMPLETELY DURING LOGIN
+    if (widget.fromLogin) {
+      return const Scaffold(
+        backgroundColor: Colors.white,
+        body: Center(
+          child: CircularProgressIndicator(),
+        ),
+      );
+    }
+
+    // 🔵 NORMAL UI FOR REGISTRATION
+    return Scaffold(
       backgroundColor: Colors.white,
-      body: Center(
-        child: CircularProgressIndicator(),
-      ),
-    );
-  }
-
-  // 🔵 NORMAL UI FOR REGISTRATION
-  return Scaffold(
-      backgroundColor: Colors.white,
-      body: SafeArea(
-        child: Padding(
-          padding: const EdgeInsets.all(20),
-          child: Column(
-            mainAxisAlignment: MainAxisAlignment.center,
-            children: [
-              // ICON / LOGO
-              const Icon(
-                Icons.people_alt_rounded,
-                size: 100,
-                color: Color(0xFF2563EB),
-              ),
-
-              const SizedBox(height: 30),
-
-              // TITLE
-              const Text(
-                "Find your friends on Talkie",
-                textAlign: TextAlign.center,
-                style: TextStyle(
-                  fontSize: 24,
-                  fontWeight: FontWeight.bold,
-                ),
-              ),
-
-              const SizedBox(height: 15),
-
-              // DESCRIPTION
-              const Text(
-                "Allow access to your contacts so you can instantly connect with people you already know.",
-                textAlign: TextAlign.center,
-                style: TextStyle(
-                  fontSize: 16,
-                  color: Colors.grey,
-                ),
-              ),
-
-              const SizedBox(height: 50),
-
-              // ALLOW BUTTON
-              SizedBox(
-                width: double.infinity,
-                height: 50,
-                child: ElevatedButton(
-                  onPressed: () => requestPermission(context),
-                  style: ElevatedButton.styleFrom(
-                    backgroundColor: const Color(0xFF2563EB),
-                    shape: RoundedRectangleBorder(
-                      borderRadius: BorderRadius.circular(12),
+      body: Stack(
+        children: [
+          SafeArea(
+            child: Padding(
+              padding: const EdgeInsets.all(20),
+              child: Column(
+                mainAxisAlignment: MainAxisAlignment.center,
+                children: [
+                  const Icon(
+                    Icons.people_alt_rounded,
+                    size: 100,
+                    color: Color(0xFF2563EB),
+                  ),
+                  const SizedBox(height: 30),
+                  const Text(
+                    "Find your friends on Talkie",
+                    textAlign: TextAlign.center,
+                    style: TextStyle(
+                      fontSize: 24,
+                      fontWeight: FontWeight.bold,
                     ),
                   ),
-                  child: const Text(
-                    "Allow Access",
-                    style: TextStyle(fontSize: 16, color: Colors.white),
+                  const SizedBox(height: 15),
+                  const Text(
+                    "Allow access to your contacts so you can instantly connect with people you already know.",
+                    textAlign: TextAlign.center,
+                    style: TextStyle(
+                      fontSize: 16,
+                      color: Colors.grey,
+                    ),
                   ),
-                ),
-              ),
+                  const SizedBox(height: 50),
+                  SizedBox(
+                    width: double.infinity,
+                    height: 50,
+                    child: ElevatedButton(
+                      onPressed: () async {
+                        setState(() {
+                          _isLoading = true;
+                          _progress = 0;
+                        });
 
-              const SizedBox(height: 10),
+                        for (int i = 0; i <= 90; i += 10) {
+                          await Future.delayed(Duration(milliseconds: 100));
+                          if (!mounted) return;
+                          setState(() {
+                            _progress = i.toDouble();
+                          });
+                        }
 
-              // SKIP BUTTON
-              TextButton(
-                onPressed: () => skip(context),
-                child: const Text(
-                  "Not now",
-                  style: TextStyle(color: Color(0xFF2563EB)),
-                ),
+                        await requestPermission(context);
+
+                        if (!mounted) return;
+
+                        setState(() {
+                          _progress = 100;
+                        });
+                      },
+                      style: ElevatedButton.styleFrom(
+                        backgroundColor: const Color(0xFF2563EB),
+                        shape: RoundedRectangleBorder(
+                          borderRadius: BorderRadius.circular(12),
+                        ),
+                      ),
+                      child: const Text(
+                        "Allow Access",
+                        style: TextStyle(fontSize: 16, color: Colors.white),
+                      ),
+                    ),
+                  ),
+                  const SizedBox(height: 10),
+                  TextButton(
+                    onPressed: () => skip(context),
+                    child: const Text(
+                      "Not now",
+                      style: TextStyle(color: Color(0xFF2563EB)),
+                    ),
+                  ),
+                ],
               ),
-            ],
+            ),
           ),
-        ),
+          if (_isLoading)
+            Container(
+              color: Colors.white.withOpacity(0.9),
+              child: Center(
+                child: Column(
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    SizedBox(
+                      height: 80,
+                      width: 80,
+                      child: Stack(
+                        alignment: Alignment.center,
+                        children: [
+                          CircularProgressIndicator(
+                            value: _progress / 100,
+                            strokeWidth: 6,
+                            color: Color(0xFF2563EB),
+                          ),
+                          Text(
+                            "${_progress.toInt()}%",
+                            style: TextStyle(
+                              fontSize: 18,
+                              fontWeight: FontWeight.bold,
+                              color: Color(0xFF2563EB),
+                            ),
+                          ),
+                        ],
+                      ),
+                    ),
+                    SizedBox(height: 20),
+                    Text(
+                      "Syncing contacts...",
+                      style: TextStyle(
+                        fontSize: 16,
+                        color: Colors.black87,
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+            ),
+        ],
       ),
     );
   }

@@ -3,6 +3,7 @@ import 'package:flutter/services.dart';
 import '../../services/auth_service.dart';
 import 'package:talkie_new/screens/auth/login_screen.dart';
 import 'package:talkie_new/screens/chats/contact_permission_screen.dart';
+import '../../database/db_helper.dart';
 
 //FullName
 class FullName extends StatefulWidget {
@@ -13,6 +14,7 @@ class FullName extends StatefulWidget {
 }
 
 class _FullNameState extends State<FullName> {
+  bool _isLoading = false;
   final _formKey = GlobalKey<FormState>();
   final TextEditingController fullname = TextEditingController();
 
@@ -147,44 +149,55 @@ class _FullNameState extends State<FullName> {
                         ),
                         fixedSize: Size(400, 48),
                       ),
-                      onPressed: () {
-                        if (_formKey.currentState!.validate()) {
-                          ScaffoldMessenger.of(context).showSnackBar(
-                            SnackBar(
-                              backgroundColor: Colors.green,
-                              //margin: EdgeInsets.all(10),
-                              content: Row(
-                                mainAxisAlignment: MainAxisAlignment.center,
-                                children: const [
-                                  Icon(Icons.check_circle, color: Colors.white),
-                                  SizedBox(width: 10),
-                                  Text(
-                                    "Name looks Okay!",
-                                    style: TextStyle(
-                                      color: Colors.white,
-                                      fontSize: 16,
+                      onPressed: _isLoading
+                          ? null
+                          : () {
+                              if (_formKey.currentState!.validate()) {
+                                setState(() => _isLoading = true);
+
+                                ScaffoldMessenger.of(context).showSnackBar(
+                                  SnackBar(
+                                    backgroundColor: Colors.green,
+                                    content: Row(
+                                      mainAxisAlignment:
+                                          MainAxisAlignment.center,
+                                      children: const [
+                                        Icon(Icons.check_circle,
+                                            color: Colors.white),
+                                        SizedBox(width: 10),
+                                        Text("Name looks Okay!",
+                                            style:
+                                                TextStyle(color: Colors.white)),
+                                      ],
                                     ),
                                   ),
-                                ],
+                                );
+
+                                Future.delayed(Duration(milliseconds: 300), () {
+                                  Navigator.push(
+                                    context,
+                                    MaterialPageRoute(
+                                      builder: (context) => EmailAddress(
+                                          fullName: fullname.text.trim()),
+                                    ),
+                                  );
+                                });
+                              } else {
+                                HapticFeedback.heavyImpact();
+                              }
+                            },
+                      child: _isLoading
+                          ? SizedBox(
+                              height: 20,
+                              width: 20,
+                              child: CircularProgressIndicator(
+                                color: Colors.white,
+                                strokeWidth: 2,
                               ),
-                            ),
-                          );
-                          Navigator.push(
-                            context,
-                            MaterialPageRoute(
-                              builder: (context) => EmailAddress(
-                                fullName: fullname.text.trim(),
-                              ),
-                            ),
-                          );
-                        } else {
-                          HapticFeedback.heavyImpact();
-                        }
-                      },
-                      child: Text(
-                        "Continue",
-                        style: TextStyle(color: Colors.white, fontSize: 16),
-                      ),
+                            )
+                          : Text("Continue",
+                              style:
+                                  TextStyle(color: Colors.white, fontSize: 16)),
                     ),
                   ],
                 ),
@@ -210,6 +223,7 @@ class EmailAddress extends StatefulWidget {
 
 class _EmailAddress_State extends State<EmailAddress> {
   final _formKey = GlobalKey<FormState>();
+  bool _isLoading = false;
   final TextEditingController email = TextEditingController();
 
   @override
@@ -336,44 +350,57 @@ class _EmailAddress_State extends State<EmailAddress> {
                         ),
                         fixedSize: Size(400, 48),
                       ),
-                      onPressed: () {
-                        if (_formKey.currentState!.validate()) {
-                          ScaffoldMessenger.of(context).showSnackBar(
-                            SnackBar(
-                              backgroundColor: Colors.green,
-                              //margin: EdgeInsets.all(10),
-                              content: Row(
-                                mainAxisAlignment: MainAxisAlignment.center,
-                                children: const [
-                                  Icon(Icons.check_circle, color: Colors.white),
-                                  SizedBox(width: 10),
-                                  Text(
-                                    "Email is valid!",
-                                    style: TextStyle(
-                                      color: Colors.white,
-                                      fontSize: 16,
+                      onPressed: _isLoading
+                          ? null
+                          : () {
+                              if (_formKey.currentState!.validate()) {
+                                setState(() => _isLoading = true);
+
+                                ScaffoldMessenger.of(context).showSnackBar(
+                                  SnackBar(
+                                    backgroundColor: Colors.green,
+                                    content: Row(
+                                      mainAxisAlignment:
+                                          MainAxisAlignment.center,
+                                      children: const [
+                                        Icon(Icons.check_circle,
+                                            color: Colors.white),
+                                        SizedBox(width: 10),
+                                        Text("Email is valid!",
+                                            style:
+                                                TextStyle(color: Colors.white)),
+                                      ],
                                     ),
                                   ),
-                                ],
+                                );
+
+                                Future.delayed(Duration(milliseconds: 300), () {
+                                  Navigator.push(
+                                    context,
+                                    MaterialPageRoute(
+                                      builder: (context) => PhoneNumber(
+                                        fullName: widget.fullName,
+                                        email: email.text.trim(),
+                                      ),
+                                    ),
+                                  );
+                                });
+                              } else {
+                                HapticFeedback.heavyImpact();
+                              }
+                            },
+                      child: _isLoading
+                          ? SizedBox(
+                              height: 20,
+                              width: 20,
+                              child: CircularProgressIndicator(
+                                color: Colors.white,
+                                strokeWidth: 2,
                               ),
-                            ),
-                          );
-                          Navigator.push(
-                            context,
-                            MaterialPageRoute(
-                              builder: (context) => PhoneNumber(
-                                  fullName: widget.fullName,
-                                  email: email.text.trim()),
-                            ),
-                          );
-                        } else {
-                          HapticFeedback.heavyImpact();
-                        }
-                      },
-                      child: Text(
-                        "Continue",
-                        style: TextStyle(color: Colors.white, fontSize: 16),
-                      ),
+                            )
+                          : Text("Continue",
+                              style:
+                                  TextStyle(color: Colors.white, fontSize: 16)),
                     ),
                   ],
                 ),
@@ -401,6 +428,7 @@ class PhoneNumber extends StatefulWidget {
 
 class _PhoneNumber_State extends State<PhoneNumber> {
   String selectedCode = "+237"; // default Cameroon
+  bool _isLoading = false;
 
   final List<Map<String, String>> countryCodes = [
     {"name": "Cameroon", "code": "+237"},
@@ -569,44 +597,58 @@ class _PhoneNumber_State extends State<PhoneNumber> {
                         ),
                         fixedSize: Size(400, 48),
                       ),
-                      onPressed: () {
-                        if (_formKey.currentState!.validate()) {
-                          ScaffoldMessenger.of(context).showSnackBar(
-                            SnackBar(
-                              backgroundColor: Colors.green,
-                              //margin: EdgeInsets.all(10),
-                              content: Row(
-                                mainAxisAlignment: MainAxisAlignment.center,
-                                children: const [
-                                  Icon(Icons.check_circle, color: Colors.white),
-                                  SizedBox(width: 10),
-                                  Text(
-                                    "Phone number Varified!",
-                                    style: TextStyle(
-                                      color: Colors.white,
-                                      fontSize: 16,
+                      onPressed: _isLoading
+                          ? null
+                          : () {
+                              if (_formKey.currentState!.validate()) {
+                                setState(() => _isLoading = true);
+
+                                ScaffoldMessenger.of(context).showSnackBar(
+                                  SnackBar(
+                                    backgroundColor: Colors.green,
+                                    content: Row(
+                                      mainAxisAlignment:
+                                          MainAxisAlignment.center,
+                                      children: const [
+                                        Icon(Icons.check_circle,
+                                            color: Colors.white),
+                                        SizedBox(width: 10),
+                                        Text("Phone number Verified!",
+                                            style:
+                                                TextStyle(color: Colors.white)),
+                                      ],
                                     ),
                                   ),
-                                ],
+                                );
+
+                                Future.delayed(Duration(milliseconds: 300), () {
+                                  Navigator.push(
+                                    context,
+                                    MaterialPageRoute(
+                                      builder: (context) => Password(
+                                        fullName: widget.fullName,
+                                        email: widget.email,
+                                        phone: selectedCode + phone.text.trim(),
+                                      ),
+                                    ),
+                                  );
+                                });
+                              } else {
+                                HapticFeedback.heavyImpact();
+                              }
+                            },
+                      child: _isLoading
+                          ? SizedBox(
+                              height: 20,
+                              width: 20,
+                              child: CircularProgressIndicator(
+                                color: Colors.white,
+                                strokeWidth: 2,
                               ),
-                            ),
-                          );
-                          Navigator.push(
-                            context,
-                            MaterialPageRoute(
-                                builder: (context) => Password(
-                                    fullName: widget.fullName,
-                                    email: widget.email,
-                                    phone: selectedCode + phone.text.trim())),
-                          );
-                        } else {
-                          HapticFeedback.heavyImpact();
-                        }
-                      },
-                      child: Text(
-                        "Continue",
-                        style: TextStyle(color: Colors.white, fontSize: 16),
-                      ),
+                            )
+                          : Text("Continue",
+                              style:
+                                  TextStyle(color: Colors.white, fontSize: 16)),
                     ),
                   ],
                 ),
@@ -639,8 +681,10 @@ class Password extends StatefulWidget {
 }
 
 class _Password_State extends State<Password> {
+  final dbHelper = DBHelper();
   final AuthService _authService = AuthService();
   final _formKey = GlobalKey<FormState>();
+  bool _isLoading = false;
   final TextEditingController password = TextEditingController();
 
   bool _obscureText = true; // initially hide password
@@ -787,51 +831,59 @@ class _Password_State extends State<Password> {
                         ),
                         fixedSize: Size(400, 48),
                       ),
-                      onPressed: () async {
-                        if (_formKey.currentState!.validate()) {
-                          ScaffoldMessenger.of(context).showSnackBar(
-                            SnackBar(
-                              backgroundColor: Colors.green,
-                              content: Text("Password valid!"),
-                            ),
-                          );
+                      onPressed: _isLoading
+                          ? null
+                          : () async {
+                              if (_formKey.currentState!.validate()) {
+                                setState(() => _isLoading = true);
 
-                          try {
-                            await _authService.registerUser(
-                              name: widget.fullName,
-                              email: widget.email,
-                              password: password.text.trim(),
-                              phone: widget.phone,
-                            );
+                                try {
+                                  await _authService.registerUser(
+                                    name: widget.fullName,
+                                    email: widget.email,
+                                    password: password.text.trim(),
+                                    phone: widget.phone,
+                                  );
 
-                            ScaffoldMessenger.of(context).showSnackBar(
-                              SnackBar(
-                                backgroundColor: Colors.green,
-                                content: Text("Account created successfully!"),
+                                  //Add this line
+                                  await dbHelper.insertUser({
+                                    'name': widget.fullName,
+                                    'email': widget.email,
+                                    'phone': widget.phone,
+                                    'imagePath': null, // or "" for now
+                                  });
+
+                                  Navigator.push(
+                                    context,
+                                    MaterialPageRoute(
+                                        builder: (context) => Successful()),
+                                  );
+                                } catch (e) {
+                                  setState(() => _isLoading = false);
+
+                                  ScaffoldMessenger.of(context).showSnackBar(
+                                    SnackBar(
+                                      backgroundColor: Colors.red,
+                                      content: Text("Error: $e"),
+                                    ),
+                                  );
+                                }
+                              } else {
+                                HapticFeedback.heavyImpact();
+                              }
+                            },
+                      child: _isLoading
+                          ? SizedBox(
+                              height: 20,
+                              width: 20,
+                              child: CircularProgressIndicator(
+                                color: Colors.white,
+                                strokeWidth: 2,
                               ),
-                            );
-
-                            Navigator.push(
-                              context,
-                              MaterialPageRoute(
-                                  builder: (context) => Successful()),
-                            );
-                          } catch (e) {
-                            ScaffoldMessenger.of(context).showSnackBar(
-                              SnackBar(
-                                backgroundColor: Colors.red,
-                                content: Text("Error: $e"),
-                              ),
-                            );
-                          }
-                        } else {
-                          HapticFeedback.heavyImpact();
-                        }
-                      },
-                      child: Text(
-                        "Create account",
-                        style: TextStyle(color: Colors.white, fontSize: 16),
-                      ),
+                            )
+                          : Text("Create account",
+                              style:
+                                  TextStyle(color: Colors.white, fontSize: 16)),
                     ),
                   ],
                 ),
@@ -858,6 +910,7 @@ class Successful extends StatefulWidget {
 
 class _Successful_State extends State<Successful> {
   final _formKey = GlobalKey<FormState>();
+  bool _isLoading = false;
   final TextEditingController password = TextEditingController();
 
   @override
@@ -919,18 +972,34 @@ class _Successful_State extends State<Successful> {
                         ),
                         fixedSize: Size(400, 48),
                       ),
-                      onPressed: () {
-                        Navigator.pushAndRemoveUntil(
-                          context,
-                          MaterialPageRoute(
-                              builder: (context) => ContactPermissionScreen()),
-                          (route) => false,
-                        );
-                      },
-                      child: Text(
-                        "Start chatting",
-                        style: TextStyle(color: Colors.white, fontSize: 16),
-                      ),
+                      onPressed: _isLoading
+                          ? null
+                          : () {
+                              setState(() => _isLoading = true);
+
+                              Future.delayed(Duration(milliseconds: 300), () {
+                                Navigator.pushAndRemoveUntil(
+                                  context,
+                                  MaterialPageRoute(
+                                    builder: (context) =>
+                                        ContactPermissionScreen(),
+                                  ),
+                                  (route) => false,
+                                );
+                              });
+                            },
+                      child: _isLoading
+                          ? SizedBox(
+                              height: 20,
+                              width: 20,
+                              child: CircularProgressIndicator(
+                                color: Colors.white,
+                                strokeWidth: 2,
+                              ),
+                            )
+                          : Text("Start chatting",
+                              style:
+                                  TextStyle(color: Colors.white, fontSize: 16)),
                     ),
                   ],
                 ),

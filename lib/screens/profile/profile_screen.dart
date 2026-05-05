@@ -3,7 +3,7 @@ import 'package:flutter/material.dart';
 import 'package:image_picker/image_picker.dart';
 import 'package:firebase_auth/firebase_auth.dart';
 import 'package:cloud_firestore/cloud_firestore.dart';
-
+import 'package:talkie_new/services/user_service.dart';
 import 'package:talkie_new/screens/profile/edit_screen.dart';
 import 'package:http/http.dart' as http;
 
@@ -15,11 +15,12 @@ class ProfileScreen extends StatefulWidget {
 }
 
 class _ProfileScreenState extends State<ProfileScreen> {
+  final UserService _userService = UserService();
   final FirebaseAuth _auth = FirebaseAuth.instance;
   final FirebaseFirestore _firestore = FirebaseFirestore.instance;
 
   static const String cloudName = "dfq7f9lcz";
-static const String uploadPreset = "talkie_upload";
+  static const String uploadPreset = "talkie_upload";
 
   final TextEditingController nameController = TextEditingController();
   final TextEditingController phoneController = TextEditingController();
@@ -114,49 +115,54 @@ static const String uploadPreset = "talkie_upload";
     );
   }
 
-Future<void> uploadImage() async {
-  final user = _auth.currentUser;
+  Future<void> uploadImage() async {
+    final user = _auth.currentUser;
 
-  if (user == null || _image == null) return;
+    if (user == null || _image == null) return;
 
-  try {
-    final url = Uri.parse(
-      "https://api.cloudinary.com/v1_1/$cloudName/image/upload"
-    );
+    try {
+      final url =
+          Uri.parse("https://api.cloudinary.com/v1_1/$cloudName/image/upload");
 
-    final request = http.MultipartRequest("POST", url)
-      ..fields['upload_preset'] = uploadPreset
-      ..files.add(await http.MultipartFile.fromPath("file", _image!.path));
+      final request = http.MultipartRequest("POST", url)
+        ..fields['upload_preset'] = uploadPreset
+        ..files.add(await http.MultipartFile.fromPath("file", _image!.path));
 
-    final response = await request.send();
+      final response = await request.send();
 
-    if (response.statusCode == 200) {
-      final responseData = await response.stream.bytesToString();
+      if (response.statusCode == 200) {
+        final responseData = await response.stream.bytesToString();
 
-      final imageUrl = RegExp(r'"secure_url":"(.*?)"')
-          .firstMatch(responseData)
-          ?.group(1);
+        final imageUrl =
+            RegExp(r'"secure_url":"(.*?)"').firstMatch(responseData)?.group(1);
 
-      if (imageUrl != null) {
-        await _firestore.collection('users').doc(user.uid).set({
-          'image': imageUrl,
-        }, SetOptions(merge: true));
+        if (imageUrl != null) {
+          await _firestore.collection('users').doc(user.uid).set({
+            'image': imageUrl,
+          }, SetOptions(merge: true));
 
-        setState(() {
-          this.imageUrl = imageUrl;
-        });
+          setState(() {
+            this.imageUrl = imageUrl;
+          });
 
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(content: Text("Profile image updated")),
-        );
+          await _userService.saveUser(
+            nameController.text,
+            user.email ?? "",
+            phoneController.text,
+            imageUrl
+          );
+
+          ScaffoldMessenger.of(context).showSnackBar(
+            SnackBar(content: Text("Profile image updated")),
+          );
+        }
+      } else {
+        print("Upload failed");
       }
-    } else {
-      print("Upload failed");
+    } catch (e) {
+      print("UPLOAD ERROR: $e");
     }
-  } catch (e) {
-    print("UPLOAD ERROR: $e");
   }
-}
 
   // =============================
   // 💾 UPDATE PROFILE

@@ -19,6 +19,28 @@ class Chat extends StatefulWidget {
 }
 
 class _ChatState extends State<Chat> {
+  String formatTime(dynamic timestamp) {
+    if (timestamp == null) return "";
+
+    DateTime dt;
+
+    if (timestamp is Timestamp) {
+      dt = timestamp.toDate();
+    } else if (timestamp is DateTime) {
+      dt = timestamp;
+    } else {
+      return "";
+    }
+
+    final now = DateTime.now();
+
+    if (dt.day == now.day && dt.month == now.month && dt.year == now.year) {
+      return "${dt.hour}:${dt.minute.toString().padLeft(2, '0')}";
+    }
+
+    return "${dt.day}/${dt.month}/${dt.year}";
+  }
+
   late Stream<QuerySnapshot> _chatListener;
   Future<List<String>> getChatUserIds() async {
     final currentUser = FirebaseAuth.instance.currentUser!;
@@ -87,7 +109,7 @@ class _ChatState extends State<Chat> {
         .snapshots();
 
     _chatListener.listen((snapshot) {
-      loadChats(); // 🔥 reload automatically when anything changes
+      loadChats(); // 🔥 updates syncedUsers automatically
     });
 
     loadChats(); // initial load
@@ -104,10 +126,18 @@ class _ChatState extends State<Chat> {
     List<Map<String, dynamic>> chatUsers = [];
 
     for (var doc in snapshot.docs) {
-      List participants = doc["participants"];
+      List participants = doc["participants"] ?? [];
 
-      String otherUserId =
-          participants.firstWhere((id) => id != currentUser.uid);
+      String? otherUserId;
+
+      for (var id in participants) {
+        if (id != currentUser.uid) {
+          otherUserId = id.toString();
+          break;
+        }
+      }
+
+      if (otherUserId == null) continue;
 
       final userDoc = await FirebaseFirestore.instance
           .collection("users")
@@ -118,6 +148,9 @@ class _ChatState extends State<Chat> {
         chatUsers.add({
           "userId": otherUserId,
           ...userDoc.data()!,
+          "message": doc["lastMessage"] ?? "",
+          "time": formatTime(doc["lastMessageTime"]), // ✅ format here
+          "status": "seen",
         });
       }
     }
@@ -250,8 +283,31 @@ class _ChatState extends State<Chat> {
           SizedBox(width: 16),
         ],
       ),
-      body: syncedUsers.isEmpty
-          ? Center(
+      body: StreamBuilder<QuerySnapshot>(
+        stream: chatStream(),
+        builder: (context, snapshot) {
+          if (!snapshot.hasData) {
+            return Center(child: CircularProgressIndicator());
+          }
+
+          final currentUser = FirebaseAuth.instance.currentUser!;
+          final chats = snapshot.data!.docs;
+
+final filtered = syncedUsers.where((user) {
+  final name = (user["name"] ?? "").toLowerCase();
+  final phone = (user["phone"] ?? "").toLowerCase();
+  final query = _searchController.text.toLowerCase();
+
+  return name.contains(query) || phone.contains(query);
+}).toList();
+          if (_searchController.text.isNotEmpty && filtered.isEmpty) {
+            return Center(
+              child: Text("No Contacts Found",
+                  style: TextStyle(color: Colors.grey, fontSize: 16)),
+            );
+          }
+          if (_searchController.text.isEmpty && filtered.isEmpty) {
+            return Center(
               child: Padding(
                 padding: const EdgeInsets.all(24.0),
                 child: Column(
@@ -339,134 +395,139 @@ class _ChatState extends State<Chat> {
                   ],
                 ),
               ),
-            )
-          : SingleChildScrollView(
-              child: Column(
-                children: [
-                  Container(
-                    margin: EdgeInsets.all(16),
-                    child: Column(
-                      crossAxisAlignment: CrossAxisAlignment.start,
-                      children: [
-                        Row(
-                          mainAxisAlignment: MainAxisAlignment.spaceBetween,
-                          children: [
-                            Text(
-                              "Online Now",
-                              style: TextStyle(
-                                fontSize: 16,
-                                color: Color(0XFF2563EB),
-                                fontWeight: FontWeight.bold,
-                              ),
-                            ),
-                            IconButton(
-                              onPressed: () {
-                                Navigator.push(
-                                  context,
-                                  MaterialPageRoute(
-                                    builder: (context) => AddContact(),
-                                  ),
-                                );
-                              },
-                              icon: Icon(Icons.add_circle),
-                            ),
-                          ],
-                        ),
-                        SizedBox(height: 12),
-                        SizedBox(
-                          height: 95,
-                          child: ListView.builder(
-                            scrollDirection: Axis.horizontal,
-                            itemCount: users.length,
-                            itemBuilder: (context, index) {
-                              final user = users[index];
+            );
+          }
 
-                              final String name =
-                                  user["name"]?.toString() ?? "";
-                              final String image =
-                                  user["image"]?.toString() ?? "";
-                              return Padding(
-                                padding:
-                                    const EdgeInsets.symmetric(horizontal: 8),
-                                child: Column(
-                                  children: [
-                                    CircleAvatar(
-                                      radius: 30,
-                                      backgroundImage: image.isNotEmpty &&
-                                              image.startsWith("http")
-                                          ? NetworkImage(image)
-                                          : null,
-                                      child: image.isEmpty
-                                          ? Icon(Icons.person)
-                                          : null,
-                                    ),
-                                    SizedBox(height: 6),
-                                    Text(
-                                      name.length > 10
-                                          ? "${name.toString().substring(0, 10)}..."
-                                          : name,
-                                      style: TextStyle(fontSize: 12),
-                                    ),
-                                  ],
+          // ✅ KEEP YOUR EXISTING UI BELOW (UNCHANGED)
+          return SingleChildScrollView(
+            child: Column(
+              children: [
+                Container(
+                  margin: EdgeInsets.all(16),
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      // 🔵 ONLINE NOW
+                      Row(
+                        mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                        children: [
+                          Text(
+                            "Online Now",
+                            style: TextStyle(
+                              fontSize: 16,
+                              color: Color(0XFF2563EB),
+                              fontWeight: FontWeight.bold,
+                            ),
+                          ),
+                          IconButton(
+                            onPressed: () {
+                              Navigator.push(
+                                context,
+                                MaterialPageRoute(
+                                  builder: (context) => AddContact(),
                                 ),
                               );
                             },
+                            icon: Icon(Icons.add_circle),
                           ),
-                        ),
-                        Row(
-                          mainAxisAlignment: MainAxisAlignment.spaceBetween,
-                          children: [
-                            Text(
-                              "Chat List",
-                              style: TextStyle(
-                                fontSize: 16,
-                                fontWeight: FontWeight.bold,
-                                color: Color(0XFF2563EB),
+                        ],
+                      ),
+
+                      SizedBox(height: 12),
+
+                      SizedBox(
+                        height: 95,
+                        child: ListView.builder(
+                          scrollDirection: Axis.horizontal,
+                          itemCount: filtered.length,
+                          itemBuilder: (context, index) {
+                            final user = filtered[index];
+
+                            return Padding(
+                              padding:
+                                  const EdgeInsets.symmetric(horizontal: 8),
+                              child: Column(
+                                children: [
+                                  CircleAvatar(
+                                    radius: 30,
+                                    backgroundImage: user["image"] != null &&
+                                            user["image"]
+                                                .toString()
+                                                .startsWith("http")
+                                        ? NetworkImage(user["image"])
+                                        : null,
+                                    child: user["image"] == null
+                                        ? Icon(Icons.person)
+                                        : null,
+                                  ),
+                                  SizedBox(height: 6),
+                                  highlightText(
+                                    (user["name"] ?? "").toString().length > 10
+                                        ? "${user["name"].toString().substring(0, 10)}..."
+                                        : user["name"] ?? "",
+                                  ),
+                                ],
                               ),
-                            ),
-                            IconButton(
-                              icon: Icon(
-                                isCardView
-                                    ? Icons.view_agenda
-                                    : Icons.view_stream,
-                                color: Color(0XFF2563EB),
-                              ),
-                              onPressed: () {
-                                setState(() {
-                                  isCardView = !isCardView;
-                                });
-                              },
-                            ),
-                          ],
+                            );
+                          },
                         ),
-                      ],
-                    ),
+                      ),
+
+                      Row(
+                        mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                        children: [
+                          Text(
+                            "Chat List",
+                            style: TextStyle(
+                              fontSize: 16,
+                              fontWeight: FontWeight.bold,
+                              color: Color(0XFF2563EB),
+                            ),
+                          ),
+                          IconButton(
+                            icon: Icon(
+                              isCardView
+                                  ? Icons.view_agenda
+                                  : Icons.view_stream,
+                              color: Color(0XFF2563EB),
+                            ),
+                            onPressed: () {
+                              setState(() {
+                                isCardView = !isCardView;
+                              });
+                            },
+                          ),
+                        ],
+                      ),
+                    ],
                   ),
-                  isCardView
-                      ? GridView.builder(
-                          shrinkWrap: true,
-                          physics: NeverScrollableScrollPhysics(),
-                          itemCount: users.length,
-                          gridDelegate:
-                              SliverGridDelegateWithFixedCrossAxisCount(
-                            crossAxisCount: 3,
-                            childAspectRatio: 0.8,
-                          ),
-                          itemBuilder: (context, index) {
-                            return buildCardProfile(index, users);
-                          },
-                        )
-                      : ListView.builder(
-                          shrinkWrap: true,
-                          physics: NeverScrollableScrollPhysics(),
-                          itemCount: users.length,
-                          itemBuilder: (context, index) {
-                            return buildRowProfile(index, users);
-                          },
+                ),
+                isCardView
+                    ? GridView.builder(
+                        shrinkWrap: true,
+                        physics: NeverScrollableScrollPhysics(),
+                        itemCount: filtered.length,
+                        gridDelegate: SliverGridDelegateWithFixedCrossAxisCount(
+                          crossAxisCount: 3,
+                          childAspectRatio: 0.8,
                         ),
-                ],
-              ),
+                        itemBuilder: (context, index) {
+                          return buildCardProfile(index, filtered);
+                        },
+                      )
+                    : ListView.builder(
+                        shrinkWrap: true,
+                        physics: NeverScrollableScrollPhysics(),
+                        itemCount: filtered.length,
+                        itemBuilder: (context, index) {
+                          return buildRowProfile(index, filtered);
+                        },
+                      ),
+              ],
             ),
+          );
+        },
+      ),
       floatingActionButton: syncedUsers.isEmpty
           ? null
           : FloatingActionButton(
@@ -592,7 +653,7 @@ class _ChatState extends State<Chat> {
                       child: Text(
                         user["time"] ?? "",
                         style: TextStyle(
-                          fontSize: 9,
+                          fontSize: 11,
                           color: const Color.fromARGB(255, 112, 112, 112),
                         ),
                       ),
@@ -615,10 +676,12 @@ class _ChatState extends State<Chat> {
                   mainAxisAlignment: MainAxisAlignment.spaceBetween,
                   children: [
                     Text(
-                      user["activity"] ?? "",
+                      (user["message"] ?? "").toString().length >= 6
+                          ? "${user["message"].toString().substring(0, 6)}..."
+                          : user["message"] ?? "",
                       style: TextStyle(
                         fontSize: 12,
-                        color: Colors.green,
+                        color: Colors.grey[700],
                         fontWeight: FontWeight.w500,
                       ),
                     ),
@@ -723,13 +786,20 @@ class _ChatState extends State<Chat> {
                   child: Column(
                     crossAxisAlignment: CrossAxisAlignment.start,
                     children: [
-                      highlightText(safeString(user["name"])),
+                      highlightText(
+                        safeString(user["name"]).length > 20
+                            ? "${safeString(user["name"]).substring(0, 20)}..."
+                            : safeString(user["name"]),
+                      ),
                       SizedBox(height: 6),
                       // Replace with actual last image from chat
                       Text(
-                        user["message"] ?? "",
-                        style: TextStyle(fontSize: 12),
-                      ),
+                          (user["message"] ?? "").toString().length > 18
+                              ? "${user["message"].toString().substring(0, 18)}..."
+                              : user["message"] ?? "",
+                          style: TextStyle(
+                              fontSize: 14,
+                              color: const Color.fromARGB(255, 114, 114, 114))),
                     ],
                   ),
                 ),
@@ -771,7 +841,7 @@ class _ChatState extends State<Chat> {
     if (!lowerText.contains(lowerQuery)) {
       return Text(
         text,
-        style: TextStyle(fontSize: 14, fontWeight: FontWeight.normal),
+        style: TextStyle(fontSize: 16, fontWeight: FontWeight.normal),
       );
     }
 
@@ -806,7 +876,7 @@ class _ChatState extends State<Chat> {
     if (status == "sent") {
       return Icon(
         Icons.circle_outlined,
-        size: 13,
+        size: 12,
         color: const Color.fromARGB(255, 108, 117, 242),
       );
     }
@@ -815,7 +885,7 @@ class _ChatState extends State<Chat> {
       return Row(
         children: [
           Icon(Icons.circle, size: 10, color: Colors.blueAccent),
-          SizedBox(width: 2),
+          SizedBox(width: 0),
           Icon(Icons.circle, size: 10, color: Colors.blueAccent),
         ],
       );
@@ -825,7 +895,7 @@ class _ChatState extends State<Chat> {
       return Row(
         children: [
           Icon(Icons.circle, size: 10, color: Colors.green),
-          SizedBox(width: 2),
+          SizedBox(width: 0),
           Icon(Icons.circle, size: 10, color: Colors.green),
         ],
       );

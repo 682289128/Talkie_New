@@ -1,8 +1,12 @@
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
+import 'package:firebase_auth/firebase_auth.dart';
+import 'package:cloud_firestore/cloud_firestore.dart';
 import '../../services/auth_service.dart';
 import 'package:talkie_new/screens/chats/contact_permission_screen.dart';
 import 'package:talkie_new/screens/splash/splash_screen.dart';
+import 'package:talkie_new/services/user_service.dart';
+import 'package:talkie_new/services/contact_syn_service.dart';
 
 //Email or Phone Page
 class Login extends StatefulWidget {
@@ -14,6 +18,7 @@ class Login extends StatefulWidget {
 
 class _LoginState extends State<Login> {
   final _formKey = GlobalKey<FormState>();
+  bool _isLoading = false;
   final TextEditingController email = TextEditingController();
 
   @override
@@ -147,52 +152,73 @@ class _LoginState extends State<Login> {
                     ElevatedButton(
                       style: ElevatedButton.styleFrom(
                         backgroundColor: Color(0xFF2563EB),
+                        disabledBackgroundColor:
+                            Color.fromARGB(255, 218, 229, 251).withOpacity(1.0),
                         shape: RoundedRectangleBorder(
                           borderRadius: BorderRadius.circular(4),
                         ),
                         fixedSize: Size(400, 48),
                       ),
-                      onPressed: () {
-                        if (_formKey.currentState!.validate()) {
-                          ScaffoldMessenger.of(context).showSnackBar(
-                            SnackBar(
-                              backgroundColor: Colors.green,
-                              duration: Duration(milliseconds: 1000),
-                              content: Row(
-                                mainAxisAlignment: MainAxisAlignment.center,
-                                children: const [
-                                  Icon(Icons.check_circle, color: Colors.white),
-                                  SizedBox(width: 10),
-                                  Text(
-                                    "Verified Successfully!",
-                                    style: TextStyle(
-                                      color: Colors.white,
-                                      fontSize: 16,
+                      onPressed: _isLoading
+                          ? null
+                          : () {
+                              if (_formKey.currentState!.validate()) {
+                                setState(() {
+                                  _isLoading = true;
+                                });
+                                ScaffoldMessenger.of(context).showSnackBar(
+                                  SnackBar(
+                                    backgroundColor: Colors.green,
+                                    duration: Duration(milliseconds: 1000),
+                                    content: Row(
+                                      mainAxisAlignment:
+                                          MainAxisAlignment.center,
+                                      children: const [
+                                        Icon(Icons.check_circle,
+                                            color: Colors.white),
+                                        SizedBox(width: 10),
+                                        Text(
+                                          "Verified Successfully!",
+                                          style: TextStyle(
+                                            color: Colors.white,
+                                            fontSize: 16,
+                                          ),
+                                        ),
+                                      ],
                                     ),
                                   ),
-                                ],
-                              ),
-                            ),
-                          );
+                                );
 
-                          // 👇 Delay navigation slightly
-                          Future.delayed(Duration(milliseconds: 200), () {
-                            Navigator.push(
-                              context,
-                              MaterialPageRoute(
-                                builder: (context) =>
-                                    Password(email: email.text.trim()),
-                              ),
-                            );
-                          });
-                        } else {
-                          HapticFeedback.heavyImpact();
-                        }
-                      },
-                      child: Text(
-                        "Continue",
-                        style: TextStyle(color: Colors.white, fontSize: 16),
-                      ),
+                                // 👇 Delay navigation slightly
+                                Future.delayed(Duration(milliseconds: 200), () {
+                                  setState(() {
+                                    _isLoading = false;
+                                  });
+                                  Navigator.push(
+                                    context,
+                                    MaterialPageRoute(
+                                      builder: (context) =>
+                                          Password(email: email.text.trim()),
+                                    ),
+                                  );
+                                });
+                              } else {
+                                HapticFeedback.heavyImpact();
+                              }
+                            },
+                      child: _isLoading
+                          ? SizedBox(
+                              height: 20,
+                              width: 20,
+                              child: CircularProgressIndicator(
+                                color: Color(0xFF2563EB),
+                                strokeWidth: 2,
+                              ))
+                          : Text(
+                              "Continue",
+                              style:
+                                  TextStyle(color: Colors.white, fontSize: 16),
+                            ),
                     ),
                     SizedBox(height: 16),
                     Container(
@@ -284,6 +310,7 @@ class Password extends StatefulWidget {
 class _PasswordState extends State<Password> {
   final AuthService _authService = AuthService();
   final _formKey = GlobalKey<FormState>();
+  bool _isLoading = false;
   final TextEditingController password = TextEditingController();
   bool _obscureText = true; // initially hide password
 
@@ -431,40 +458,87 @@ class _PasswordState extends State<Password> {
                         ),
                         fixedSize: Size(400, 48),
                       ),
-                      onPressed: () async {
-                        if (_formKey.currentState!.validate()) {
-                          try {
-                            await _authService.loginUser(
-                              widget.email,
-                              password.text.trim(),
-                            );
+                      onPressed: _isLoading
+                          ? null
+                          : () async {
+                              if (_formKey.currentState!.validate()) {
+                                setState(() {
+                                  _isLoading = true;
+                                });
 
-                            
-                            Navigator.pushAndRemoveUntil(
-                              context,
-                              MaterialPageRoute(builder: (context) => ContactPermissionScreen(fromLogin: true),),
-                              (route) => false,
-                            );
-                          } catch (e) {
-                            ScaffoldMessenger.of(context).showSnackBar(
-                              SnackBar(
-                                backgroundColor: Colors.red,
-                                content: Text("Login failed: ${e.toString()}"),
+                                try {
+                                  await _authService.loginUser(
+                                    widget.email,
+                                    password.text.trim(),
+                                  );
+
+                                  final user =
+                                      FirebaseAuth.instance.currentUser;
+                                  final syncService = ContactSyncService();
+
+                                  if (user == null) return;
+
+                                  final doc = await FirebaseFirestore.instance
+                                      .collection('users')
+                                      .doc(user.uid)
+                                      .get();
+
+                                  if (doc.exists) {
+                                    final data = doc.data();
+
+                                    await UserService().saveUser(
+                                      data?['name'] ?? "",
+                                      data?['email'] ?? "",
+                                      data?['phone'] ?? "",
+                                      data?['image'] ?? "",
+                                    );
+                                  }
+                                  syncService.syncContacts();
+                                  Navigator.pushAndRemoveUntil(
+                                    context,
+                                    MaterialPageRoute(
+                                      builder: (context) =>
+                                          ContactPermissionScreen(
+                                              fromLogin: true),
+                                    ),
+                                    (route) => false,
+                                  );
+                                } catch (e) {
+                                  setState(() {
+                                    _isLoading = false;
+                                  });
+
+                                  ScaffoldMessenger.of(context).showSnackBar(
+                                    SnackBar(
+                                      backgroundColor: Colors.red,
+                                      content:
+                                          Text("Login failed: ${e.toString()}"),
+                                    ),
+                                  );
+                                }
+                              }
+                            },
+                      child: _isLoading
+                          ? SizedBox(
+                              height: 20,
+                              width: 20,
+                              child: CircularProgressIndicator(
+                                color: Color.fromARGB(186, 37, 100, 235),
+                                strokeWidth: 2,
                               ),
-                            );
-                          }
-                        }
-                      },
-                      child: Text(
-                        "Login",
-                        style: TextStyle(color: Colors.white, fontSize: 16),
-                      ),
+                            )
+                          : Text(
+                              "Login",
+                              style:
+                                  TextStyle(color: Colors.white, fontSize: 16),
+                            ),
                     ),
                     TextButton(
                       onPressed: () {},
                       child: Text(
                         "Fogot password?",
-                        style: TextStyle(color: Color(0XFF2563EB)),
+                        style:
+                            TextStyle(color: Color(0XFF2563EB), fontSize: 16),
                       ),
                     ),
                   ],
