@@ -4,6 +4,7 @@ import 'package:firebase_auth/firebase_auth.dart';
 import 'package:talkie_new/services/chat_service.dart';
 import 'package:talkie_new/widgets/message_bubble.dart';
 import 'package:flutter/services.dart';
+import 'package:scrollable_positioned_list/scrollable_positioned_list.dart';
 
 class Message extends StatefulWidget {
   final String contactName;
@@ -22,11 +23,22 @@ class Message extends StatefulWidget {
 }
 
 class _MessageState extends State<Message> {
+  bool isNavigatingToReply = false;
+  bool shouldAutoScroll = true;
+  bool hasInitiallyScrolled = false;
+  List<QueryDocumentSnapshot> currentDocs = [];
+  final FocusNode _textFocusNode = FocusNode();
+
+  String? focusedMessageId;
   Map<int, double> swipeOffset = {};
   String? highlightedMessageId;
+  String? deletedHighlightedId;
   final ChatService _chatService = ChatService();
   final TextEditingController _controller = TextEditingController();
-  final ScrollController _scrollController = ScrollController();
+  final ItemScrollController _itemScrollController = ItemScrollController();
+
+  final ItemPositionsListener _itemPositionsListener =
+      ItemPositionsListener.create();
   final currentUser = FirebaseAuth.instance.currentUser!;
 
   Map<String, dynamic>?
@@ -36,6 +48,7 @@ class _MessageState extends State<Message> {
       replyingToIndex; // tracks which message is being replied to for highlighting
 
   int? editingIndex; // tracks which message is being edited
+  String? editingMessageId; // 🔥 real message id for editing
 
   // Add these new state variables at the top
   int?
@@ -50,11 +63,36 @@ class _MessageState extends State<Message> {
 
     final messageText = _controller.text.trim();
 
+    // 🔥 EDIT MODE
+    if (editingMessageId != null) {
+      try {
+        await _chatService.updateMessage(
+          messageId: editingMessageId!,
+          newText: messageText,
+          senderId: currentUser.uid,
+          receiverId: widget.contactUserId,
+        );
+
+        setState(() {
+          editingIndex = null;
+          editingMessageId = null;
+          highlightedMessageId = null;
+        });
+
+        _controller.clear();
+        return;
+      } catch (e) {
+        print("EDIT ERROR: $e"); // 👈 VERY IMPORTANT
+      }
+    }
+
+    // 🟢 NORMAL SEND
     await _chatService.sendMessage(
       senderId: currentUser.uid,
       receiverId: widget.contactUserId,
       text: messageText,
       replyTo: replyingTo?["text"],
+      replyToId: replyingTo?["messageId"],
     );
 
     _controller.clear();
@@ -63,18 +101,14 @@ class _MessageState extends State<Message> {
       replyingTo = null;
       replyingToIndex = null;
       highlightedMessageId = null;
-      // 🔥 RESET swipe UI after sending reply
       swipeOffset.clear();
     });
+    Future.delayed(const Duration(milliseconds: 100), () {
+      scrollToBottom(currentDocs);
+    });
 
-    Future.delayed(Duration(milliseconds: 200), () {
-      if (_scrollController.hasClients) {
-        _scrollController.animateTo(
-          _scrollController.position.maxScrollExtent,
-          duration: Duration(milliseconds: 300),
-          curve: Curves.easeOut,
-        );
-      }
+    Future.delayed(Duration(milliseconds: 500), () {
+      shouldAutoScroll = false;
     });
   }
 
@@ -229,10 +263,112 @@ class _MessageState extends State<Message> {
     );
   }
 
+  Widget messageGlowWrapper({
+    required String messageId,
+    required Widget child,
+  }) {
+    final isFocused = focusedMessageId == messageId;
+
+    return AnimatedContainer(
+      duration: const Duration(milliseconds: 700), // smoother fade
+      curve: Curves.easeOut,
+      padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 2),
+      decoration: BoxDecoration(
+        color: isFocused
+            ? const Color.fromARGB(255, 3, 141, 254).withOpacity(0.25)
+            : Colors.transparent,
+      ),
+      child: child,
+    );
+  }
+
+  void handleSwipeReply(
+    String text,
+    String messageId,
+    int index,
+    List<QueryDocumentSnapshot> docs,
+  ) {
+    replyingTo = {
+      "text": text,
+      "messageId": messageId,
+    };
+    replyingToIndex = index;
+
+    // 🔥 haptic for BOTH sides
+    HapticFeedback.selectionClick();
+
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (!mounted) return;
+
+      Future.delayed(const Duration(milliseconds: 50), () {
+        if (!mounted) return;
+
+        FocusScope.of(context).unfocus();
+
+        Future.delayed(const Duration(milliseconds: 30), () {
+          if (!mounted) return;
+
+          Future.delayed(const Duration(milliseconds: 120), () {
+            if (mounted) {
+              FocusScope.of(context).requestFocus(_textFocusNode);
+            }
+          });
+        });
+      });
+    });
+
+    WidgetsBinding.instance.addPostFrameCallback((_) async {
+      if (!mounted) return;
+
+      await Future.delayed(const Duration(milliseconds: 120));
+
+      _itemScrollController.scrollTo(
+        index: docs.length - 1,
+        duration: const Duration(milliseconds: 250),
+        curve: Curves.easeOut,
+        alignment: 0.0,
+      );
+    });
+  }
+
+  void scrollToBottom(List docs) {
+    if (!shouldAutoScroll) return;
+
+    WidgetsBinding.instance.addPostFrameCallback((_) async {
+      if (!mounted) return;
+
+      if (docs.isEmpty) return;
+
+      await Future.delayed(const Duration(milliseconds: 100));
+
+      if (!_itemScrollController.isAttached) return;
+
+      try {
+        await _itemScrollController.scrollTo(
+          index: docs.length - 1,
+          duration: const Duration(milliseconds: 300),
+          curve: Curves.easeOut,
+          alignment: 0.0,
+        );
+      } catch (e) {
+        debugPrint("Scroll error: $e");
+      }
+    });
+  }
+
+  Future<List> _getCurrentDocs() async {
+    final snapshot = await _chatService
+        .getMessages(currentUser.uid, widget.contactUserId)
+        .first;
+
+    return snapshot.docs;
+  }
+
   @override
   Widget build(BuildContext context) {
     return Scaffold(
       backgroundColor: Color(0xFFF8FAFC),
+      resizeToAvoidBottomInset: true,
 
       // 🔹 APP BAR
       appBar: AppBar(
@@ -280,15 +416,14 @@ class _MessageState extends State<Message> {
                 reverseChat = !reverseChat;
               });
 
-              // keep scroll position correct
               Future.delayed(Duration(milliseconds: 100), () {
-                _scrollController.animateTo(
-                  reverseChat
-                      ? _scrollController.position.minScrollExtent
-                      : _scrollController.position.maxScrollExtent,
-                  duration: Duration(milliseconds: 300),
-                  curve: Curves.easeOut,
-                );
+                if (_itemScrollController.isAttached) {
+                  _itemScrollController.scrollTo(
+                    index: reverseChat ? 0 : 999999,
+                    duration: Duration(milliseconds: 300),
+                    curve: Curves.easeOut,
+                  );
+                }
               });
             },
           ),
@@ -309,15 +444,35 @@ class _MessageState extends State<Message> {
                         widget.contactUserId,
                       ),
                       builder: (context, snapshot) {
+                        //<-here(on that opening curly brace)
                         if (!snapshot.hasData) {
                           return Center(child: CircularProgressIndicator());
                         }
 
                         final docs = snapshot.data!.docs;
+                        if (docs.isNotEmpty) {
+                          scrollToBottom(docs);
+                        }
+// 🔥 AUTO SCROLL TO LAST MESSAGE WHEN CHAT OPENS
+                        WidgetsBinding.instance.addPostFrameCallback((_) {
+                          if (docs.isNotEmpty && !hasInitiallyScrolled) {
+                            hasInitiallyScrolled = true;
 
-                        return ListView.builder(
+                            shouldAutoScroll = true;
+
+                            scrollToBottom(docs);
+
+                            Future.delayed(Duration(milliseconds: 500), () {
+                              shouldAutoScroll = false;
+                            });
+                          }
+                        });
+                        return ScrollablePositionedList.builder(
+                          shrinkWrap: false,
+                          physics: const ClampingScrollPhysics(),
                           reverse: !reverseChat,
-                          controller: _scrollController,
+                          itemScrollController: _itemScrollController,
+                          itemPositionsListener: _itemPositionsListener,
                           itemCount: docs.length,
                           padding: EdgeInsets.symmetric(
                               horizontal: 12, vertical: 10),
@@ -325,68 +480,424 @@ class _MessageState extends State<Message> {
                             final doc = docs[index];
 
                             final msg = doc.data() as Map<String, dynamic>;
+                            msg["messageId"] = doc.id;
                             final messageId = doc.id;
 
                             final bool isMe = msg["senderId"] ==
                                 FirebaseAuth.instance.currentUser!.uid;
 
-                            double _dragOffset = 0;
+// 🔥 Handle date correctly for both reverse modes
+// 🔥 REAL reverse state from ListView
+                            final bool isReversed = !reverseChat;
 
-                            // Previous message date (or null if first message)
-                            final prevRaw = index < docs.length - 1
-                                ? (docs[index + 1].data()
-                                    as Map<String, dynamic>)["createdAt"]
-                                : null;
+// 🔥 Compare correct neighboring message
+                            Map<String, dynamic>? compareMsg;
+
+                            if (isReversed) {
+                              // bottom -> top
+                              if (index < docs.length - 1) {
+                                compareMsg = docs[index + 1].data()
+                                    as Map<String, dynamic>;
+                              }
+                            } else {
+                              // top -> bottom
+                              if (index > 0) {
+                                compareMsg = docs[index - 1].data()
+                                    as Map<String, dynamic>;
+                              }
+                            }
+
+                            final prevRaw = compareMsg?["createdAt"];
 
                             final prevDate = (prevRaw is Timestamp)
                                 ? prevRaw.toDate()
                                 : null;
 
-                            final currDate =
-                                (msg["createdAt"] as Timestamp?)?.toDate() ??
-                                    DateTime.now();
+                            final currDate = (msg["createdAt"] is Timestamp)
+                                ? (msg["createdAt"] as Timestamp).toDate()
+                                : DateTime.fromMillisecondsSinceEpoch(0);
+
                             final isDeleted = msg["isDeleted"] == 1;
                             final isEdited = msg["edited"] == 1;
 
                             List<Widget> widgets = [];
 
-                            // Add date separator if first message of a new day
-                            if (prevDate == null ||
-                                prevDate.day != currDate.day) {
-                              widgets.add(
-                                Center(
-                                  child: Container(
-                                    margin: EdgeInsets.symmetric(vertical: 10),
-                                    padding: EdgeInsets.symmetric(
-                                      horizontal: 12,
-                                      vertical: 4,
-                                    ),
-                                    decoration: BoxDecoration(
-                                      color: Colors.grey[300],
-                                      borderRadius: BorderRadius.circular(12),
-                                    ),
-                                    child: Text(
-                                      getDateLabel(currDate),
-                                      style: TextStyle(
-                                        fontSize: 12,
-                                        color: Colors.black87,
-                                      ),
-                                    ),
+// 🔥 TRUE date comparison
+                            bool isDifferentDate = prevDate == null ||
+                                prevDate.year != currDate.year ||
+                                prevDate.month != currDate.month ||
+                                prevDate.day != currDate.day;
+
+// 🔥 DATE WIDGET
+                            Widget dateWidget = Center(
+                              child: Container(
+                                margin: EdgeInsets.symmetric(vertical: 10),
+                                padding: EdgeInsets.symmetric(
+                                  horizontal: 12,
+                                  vertical: 4,
+                                ),
+                                decoration: BoxDecoration(
+                                  color: Colors.grey[300],
+                                  borderRadius: BorderRadius.circular(12),
+                                ),
+                                child: Text(
+                                  getDateLabel(currDate),
+                                  style: TextStyle(
+                                    fontSize: 12,
+                                    color: Colors.black87,
                                   ),
                                 ),
-                              );
+                              ),
+                            );
+
+// ✅ ALWAYS PLACE DATE ABOVE FIRST MESSAGE OF THAT DAY
+                            if (isDifferentDate) {
+                              widgets.add(dateWidget);
                             }
 
                             // Add the actual message bubble
                             widgets.add(
                               StatefulBuilder(
                                 builder: (context, setInnerState) {
+                                  if (!isMe) {
+                                    return GestureDetector(
+                                      onLongPress: () {
+                                        // ❌ BLOCK COPY IF MESSAGE IS DELETED
+                                        if (isDeleted) return;
+
+                                        HapticFeedback.heavyImpact();
+
+                                        Clipboard.setData(ClipboardData(
+                                            text: msg["text"] ?? ""));
+
+                                        HapticFeedback.selectionClick();
+                                      },
+
+                                      // 🔥 ADD SWIPE BACK FOR RECEIVER MESSAGES
+                                      onHorizontalDragUpdate: (details) {
+                                        if (isDeleted) return;
+                                        setState(() {
+                                          final raw = swipeOffset[index] ?? 0;
+                                          double next = raw + details.delta.dx;
+
+                                          swipeOffset[index] =
+                                              next.clamp(0, 80);
+                                        });
+                                      },
+
+                                      onHorizontalDragEnd: (_) {
+                                        if (isDeleted) return;
+                                        final offset = swipeOffset[index] ?? 0;
+
+                                        setState(() {
+                                          if (offset.abs() > 50) {
+                                            handleSwipeReply(msg["text"],
+                                                messageId, index, docs);
+                                          }
+
+                                          swipeOffset[index] = 0;
+                                        });
+                                      },
+
+                                      child: Transform.translate(
+                                        offset:
+                                            Offset(swipeOffset[index] ?? 0, 0),
+                                        child: messageGlowWrapper(
+                                          messageId: messageId,
+                                          child: MessageBubble(
+                                            msg: msg,
+                                            isMe: isMe,
+                                            status: msg["status"] ?? "sent",
+                                            isReplying:
+                                                replyingToIndex == index,
+
+                                            // 🔥 ORIGINAL EDIT HIGHLIGHT
+                                            isHighlighted:
+                                                highlightedMessageId ==
+                                                        messageId ||
+                                                    focusedMessageId ==
+                                                        messageId,
+
+                                            isEdited: isEdited,
+                                            isDeleted: isDeleted,
+                                            deletedType: msg["deletedType"],
+
+                                            // 🔥 NEW TAP REPLY FEATURE
+                                            onTap: () async {
+                                              final targetId = msg["replyToId"];
+
+                                              if (targetId != null) {
+                                                final targetIndex =
+                                                    docs.indexWhere((d) =>
+                                                        d.id == targetId);
+
+                                                if (targetIndex != -1) {
+                                                  setState(() {
+                                                    focusedMessageId = targetId;
+                                                  });
+
+                                                  await _itemScrollController
+                                                      .scrollTo(
+                                                    index: targetIndex,
+                                                    duration: Duration(
+                                                        milliseconds: 500),
+                                                    curve: Curves.easeInOut,
+                                                    alignment: 0.3,
+                                                  );
+
+                                                  Future.delayed(
+                                                      Duration(seconds: 2), () {
+                                                    if (mounted) {
+                                                      setState(() {
+                                                        focusedMessageId = null;
+                                                      });
+                                                    }
+                                                  });
+                                                }
+
+                                                return;
+                                              }
+
+                                              if (isDeleted &&
+                                                  msg["deletedType"] ==
+                                                      "temporary") {
+                                                await _chatService
+                                                    .restoreMessage(
+                                                  messageId: messageId,
+                                                  senderId: currentUser.uid,
+                                                  receiverId:
+                                                      widget.contactUserId,
+                                                );
+                                              }
+                                            },
+
+                                            // 🔥 EXISTING RESTORE LOGIC
+                                            isSwiped: (swipeOffset[index] ?? 0)
+                                                    .abs() >
+                                                5,
+
+                                            onDoubleTap: isMe
+                                                ? () {
+                                                    setState(() {
+                                                      if (editingIndex ==
+                                                          index) {
+                                                        editingIndex = null;
+                                                        editingMessageId = null;
+                                                        highlightedMessageId =
+                                                            null;
+                                                        _controller.clear();
+                                                        return;
+                                                      }
+
+                                                      editingIndex = index;
+                                                      editingMessageId =
+                                                          messageId;
+                                                      highlightedMessageId =
+                                                          messageId;
+
+                                                      _controller.text =
+                                                          msg["text"] ?? "";
+
+                                                      _controller.selection =
+                                                          TextSelection
+                                                              .fromPosition(
+                                                        TextPosition(
+                                                          offset: _controller
+                                                              .text.length,
+                                                        ),
+                                                      );
+                                                    });
+                                                  }
+                                                : null,
+                                          ),
+                                        ),
+                                      ),
+                                    );
+                                  }
+
+                                  if (isDeleted) {
+                                    return GestureDetector(
+                                      onTap: () async {
+                                        if (msg["deletedType"] == "permanent") {
+                                          return; // ❌ block popup completely
+                                        }
+
+                                        final action =
+                                            await showModalBottomSheet<String>(
+                                          context: context,
+                                          shape: RoundedRectangleBorder(
+                                            borderRadius: BorderRadius.vertical(
+                                                top: Radius.circular(18)),
+                                          ),
+                                          builder: (context) {
+                                            return Padding(
+                                              padding: const EdgeInsets.all(18),
+                                              child: Column(
+                                                mainAxisSize: MainAxisSize.min,
+                                                children: [
+                                                  // Title
+                                                  Text(
+                                                    "Deleted Message Options",
+                                                    style: TextStyle(
+                                                      fontSize: 16,
+                                                      fontWeight:
+                                                          FontWeight.w600,
+                                                      letterSpacing: 0.3,
+                                                    ),
+                                                  ),
+
+                                                  SizedBox(height: 18),
+
+                                                  // 🔵 RESTORE (ONLY IF TEMPORARY)
+                                                  if (msg["deletedType"] ==
+                                                      "temporary")
+                                                    InkWell(
+                                                      onTap: () =>
+                                                          Navigator.pop(context,
+                                                              "restore"),
+                                                      borderRadius:
+                                                          BorderRadius.circular(
+                                                              12),
+                                                      child: Container(
+                                                        width: double.infinity,
+                                                        padding: EdgeInsets
+                                                            .symmetric(
+                                                                vertical: 14,
+                                                                horizontal: 12),
+                                                        decoration:
+                                                            BoxDecoration(
+                                                          border: Border.all(
+                                                              color: Colors.blue
+                                                                  .shade200,
+                                                              width: 1),
+                                                          borderRadius:
+                                                              BorderRadius
+                                                                  .circular(12),
+                                                        ),
+                                                        child: Row(
+                                                          mainAxisAlignment:
+                                                              MainAxisAlignment
+                                                                  .center,
+                                                          children: [
+                                                            Icon(Icons.restore,
+                                                                color:
+                                                                    Colors.blue,
+                                                                size: 20),
+                                                            SizedBox(width: 10),
+                                                            Text(
+                                                              "Restore Message",
+                                                              style: TextStyle(
+                                                                fontSize: 14,
+                                                                fontWeight:
+                                                                    FontWeight
+                                                                        .w500,
+                                                                color: Colors
+                                                                    .blue
+                                                                    .shade700,
+                                                              ),
+                                                            ),
+                                                          ],
+                                                        ),
+                                                      ),
+                                                    ),
+
+                                                  if (msg["deletedType"] ==
+                                                      "temporary")
+                                                    SizedBox(height: 10),
+
+                                                  // 🔴 PERMANENT DELETE
+                                                  InkWell(
+                                                    onTap: () => Navigator.pop(
+                                                        context, "delete"),
+                                                    borderRadius:
+                                                        BorderRadius.circular(
+                                                            12),
+                                                    child: Container(
+                                                      width: double.infinity,
+                                                      padding:
+                                                          EdgeInsets.symmetric(
+                                                              vertical: 14,
+                                                              horizontal: 12),
+                                                      decoration: BoxDecoration(
+                                                        border: Border.all(
+                                                            color: Colors
+                                                                .red.shade200,
+                                                            width: 1),
+                                                        borderRadius:
+                                                            BorderRadius
+                                                                .circular(12),
+                                                      ),
+                                                      child: Row(
+                                                        mainAxisAlignment:
+                                                            MainAxisAlignment
+                                                                .center,
+                                                        children: [
+                                                          Icon(
+                                                              Icons
+                                                                  .delete_outline,
+                                                              color: Colors.red,
+                                                              size: 20),
+                                                          SizedBox(width: 10),
+                                                          Text(
+                                                            "Delete Permanently",
+                                                            style: TextStyle(
+                                                              fontSize: 14,
+                                                              fontWeight:
+                                                                  FontWeight
+                                                                      .w500,
+                                                              color: Colors
+                                                                  .red.shade700,
+                                                            ),
+                                                          ),
+                                                        ],
+                                                      ),
+                                                    ),
+                                                  ),
+
+                                                  SizedBox(height: 6),
+                                                ],
+                                              ),
+                                            );
+                                          },
+                                        );
+                                        setState(() {
+                                          deletedHighlightedId = null;
+                                        });
+                                        if (action == "restore") {
+                                          await _chatService.restoreMessage(
+                                            messageId: messageId,
+                                            senderId: currentUser.uid,
+                                            receiverId: widget.contactUserId,
+                                          );
+                                        }
+
+                                        if (action == "delete") {
+                                          await _chatService.deleteMessage(
+                                            messageId: messageId,
+                                            senderId: currentUser.uid,
+                                            receiverId: widget.contactUserId,
+                                            type: "permanent",
+                                          );
+                                        }
+                                      },
+                                      child: MessageBubble(
+                                        msg: msg,
+                                        isMe: isMe,
+                                        status: msg["status"] ?? "sent",
+                                        isDeleted: isDeleted,
+                                        deletedType: msg["deletedType"],
+
+                                        // ❌ EVERYTHING ELSE DISABLED
+                                        isSwiped: false,
+                                        isReplying: false,
+                                        isHighlighted: false,
+                                        isEdited: false,
+                                      ),
+                                    );
+                                  }
+
                                   return LongPressDraggable<DocumentReference>(
                                       data: docs[index].reference,
-                                      dragAnchorStrategy:
-                                          pointerDragAnchorStrategy, // ✅ keeps finger aligned
-                                      feedbackOffset:
-                                          Offset(0, 0), // ✅ removes 8–10cm gap
                                       onDragStarted: () {
                                         setState(() {
                                           deletingIndex =
@@ -400,42 +911,137 @@ class _MessageState extends State<Message> {
                                           showTrash = false;
                                         });
                                       },
-                                      onDragEnd: (_) {
+                                      onDragEnd: (details) async {
                                         setState(() {
                                           deletingIndex = null;
                                           showTrash = false;
                                         });
-                                      },
-                                      feedback: Material(
-                                        color: Colors.transparent,
-                                        child: Transform.translate(
-                                          offset: Offset(0,
-                                              0), // 👈 removes weird offset gap
-                                          child: ConstrainedBox(
-                                            constraints: BoxConstraints(
-                                              maxWidth: MediaQuery.of(context)
-                                                      .size
-                                                      .width *
-                                                  0.75,
+
+                                        // If dropped on trash zone, show dialog
+                                        if (details.wasAccepted) return;
+
+                                        // OPTIONAL SAFETY: only trigger if near bottom (trash area)
+                                        final screenHeight =
+                                            MediaQuery.of(context).size.height;
+                                        final dropY = details.offset.dy;
+
+                                        if (dropY > screenHeight - 120) {
+                                          final result =
+                                              await showModalBottomSheet<
+                                                  String>(
+                                            context: context,
+                                            shape: RoundedRectangleBorder(
+                                              borderRadius:
+                                                  BorderRadius.vertical(
+                                                      top: Radius.circular(18)),
                                             ),
-                                            child: Opacity(
-                                              opacity: 0.9,
-                                              child: MessageBubble(
-                                                msg: msg,
-                                                isMe: isMe,
-                                                isReplying: false,
-                                                status: msg["status"] ?? "sent",
-                                                isHighlighted: false,
-                                                isEdited: isEdited,
-                                                isDeleted: isDeleted,
-                                                isSwiped:
-                                                    (swipeOffset[index] ?? 0)
-                                                            .abs() >
-                                                        5,
+                                            builder: (context) {
+                                              return Padding(
+                                                padding:
+                                                    const EdgeInsets.all(16),
+                                                child: Column(
+                                                  mainAxisSize:
+                                                      MainAxisSize.min,
+                                                  children: [
+                                                    Text(
+                                                      "Delete message?",
+                                                      style: TextStyle(
+                                                          fontSize: 16,
+                                                          fontWeight:
+                                                              FontWeight.bold),
+                                                    ),
+                                                    SizedBox(height: 10),
+
+                                                    Text(
+                                                      "Choose how you want to delete this message",
+                                                      textAlign:
+                                                          TextAlign.center,
+                                                      style: TextStyle(
+                                                          color: Colors.grey),
+                                                    ),
+
+                                                    SizedBox(height: 20),
+
+                                                    // 🔴 Permanent delete
+                                                    SizedBox(
+                                                      width: double.infinity,
+                                                      child: ElevatedButton(
+                                                        style: ElevatedButton
+                                                            .styleFrom(
+                                                          backgroundColor:
+                                                              Colors.red,
+                                                        ),
+                                                        onPressed: () {
+                                                          Navigator.pop(context,
+                                                              "permanent");
+                                                        },
+                                                        child: Text(
+                                                            "Delete for everyone (Permanent)"),
+                                                      ),
+                                                    ),
+
+                                                    SizedBox(height: 10),
+
+                                                    // 🟠 Temporary delete
+                                                    SizedBox(
+                                                      width: double.infinity,
+                                                      child: OutlinedButton(
+                                                        onPressed: () {
+                                                          Navigator.pop(context,
+                                                              "temporary");
+                                                        },
+                                                        child: Text(
+                                                            "Delete for me (Recoverable)"),
+                                                      ),
+                                                    ),
+
+                                                    SizedBox(height: 10),
+                                                  ],
+                                                ),
+                                              );
+                                            },
+                                          );
+
+                                          if (result != null) {
+                                            await _chatService.deleteMessage(
+                                              messageId: messageId,
+                                              senderId: currentUser.uid,
+                                              receiverId: widget.contactUserId,
+                                              type: result,
+                                            );
+                                          }
+                                        }
+                                      },
+                                      feedback: Builder(
+                                        builder: (context) {
+                                          final screenWidth =
+                                              MediaQuery.of(context).size.width;
+
+                                          return Material(
+                                            color: Colors.transparent,
+                                            child: Transform.translate(
+                                              offset:
+                                                  Offset(screenWidth * 0.25, 0),
+                                              // 👈 pushes bubble toward right side intentionally
+                                              child: Opacity(
+                                                opacity: 0.95,
+                                                child: MessageBubble(
+                                                  msg: msg,
+                                                  isMe: isMe,
+                                                  isReplying: false,
+                                                  status:
+                                                      msg["status"] ?? "sent",
+                                                  isHighlighted: false,
+                                                  isEdited: isEdited,
+                                                  isDeleted: isDeleted,
+                                                  deletedType:
+                                                      msg["deletedType"],
+                                                  isSwiped: false,
+                                                ),
                                               ),
                                             ),
-                                          ),
-                                        ),
+                                          );
+                                        },
                                       ),
                                       child: GestureDetector(
                                         onHorizontalDragStart: (_) {
@@ -465,8 +1071,8 @@ class _MessageState extends State<Message> {
 
                                           setState(() {
                                             if (offset.abs() > 50) {
-                                              replyingTo = msg;
-                                              replyingToIndex = index;
+                                              handleSwipeReply(msg["text"],
+                                                  messageId, index, docs);
                                             }
 
                                             swipeOffset[index] = 0;
@@ -477,10 +1083,8 @@ class _MessageState extends State<Message> {
                                             swipeOffset[index] ?? 0,
                                             0,
                                           ),
-                                          child: AnimatedContainer(
-                                            duration:
-                                                Duration(milliseconds: 120),
-                                            curve: Curves.easeOut,
+                                          child: messageGlowWrapper(
+                                            messageId: messageId,
                                             child: MessageBubble(
                                               msg: msg,
                                               isMe: isMe,
@@ -489,9 +1093,66 @@ class _MessageState extends State<Message> {
                                                   replyingToIndex == index,
                                               isHighlighted:
                                                   highlightedMessageId ==
-                                                      messageId,
+                                                          messageId ||
+                                                      focusedMessageId ==
+                                                          messageId,
                                               isEdited: isEdited,
                                               isDeleted: isDeleted,
+                                              deletedType: msg["deletedType"],
+                                              onTap: () async {
+                                                // 🔥 REPLY NAVIGATION
+
+                                                final targetId =
+                                                    msg["replyToId"];
+
+                                                if (targetId != null) {
+                                                  final targetIndex =
+                                                      docs.indexWhere((d) =>
+                                                          d.id == targetId);
+
+                                                  if (targetIndex != -1) {
+                                                    setState(() {
+                                                      focusedMessageId =
+                                                          targetId;
+                                                    });
+
+                                                    await _itemScrollController
+                                                        .scrollTo(
+                                                      index: targetIndex,
+                                                      duration: Duration(
+                                                          milliseconds: 500),
+                                                      curve: Curves.easeInOut,
+                                                      alignment: 0.3,
+                                                    );
+
+                                                    Future.delayed(
+                                                        Duration(seconds: 2),
+                                                        () {
+                                                      if (mounted) {
+                                                        setState(() {
+                                                          focusedMessageId =
+                                                              null;
+                                                        });
+                                                      }
+                                                    });
+                                                  }
+
+                                                  return;
+                                                }
+
+                                                // 🔥 RESTORE TEMP MESSAGE
+                                                if (isDeleted &&
+                                                    msg["deletedType"] ==
+                                                        "temporary") {
+                                                  await _chatService
+                                                      .restoreMessage(
+                                                    messageId: messageId,
+                                                    senderId: currentUser.uid,
+                                                    receiverId:
+                                                        widget.contactUserId,
+                                                  );
+                                                }
+                                              },
                                               isSwiped:
                                                   (swipeOffset[index] ?? 0)
                                                           .abs() >
@@ -503,6 +1164,8 @@ class _MessageState extends State<Message> {
                                                             index) {
                                                           // 🔥 CANCEL EDIT MODE (NEW FEATURE YOU WANTED)
                                                           editingIndex = null;
+                                                          editingMessageId =
+                                                              null; // 🔥 reset
                                                           highlightedMessageId =
                                                               null;
                                                           _controller.clear();
@@ -510,6 +1173,8 @@ class _MessageState extends State<Message> {
                                                         }
 
                                                         editingIndex = index;
+                                                        editingMessageId =
+                                                            messageId; // 🔥 important
                                                         highlightedMessageId =
                                                             messageId;
 
@@ -535,16 +1200,19 @@ class _MessageState extends State<Message> {
                               ),
                             );
 
-                            return Column(
-                              crossAxisAlignment: CrossAxisAlignment.stretch,
-                              children: widgets,
+                            return Container(
+                              key: ValueKey(messageId),
+                              child: Column(
+                                crossAxisAlignment: CrossAxisAlignment.center,
+                                children: widgets,
+                              ),
                             );
                           },
                         );
                       })),
               if (replyingTo != null)
                 Positioned(
-                  bottom: 80,
+                  bottom: MediaQuery.of(context).viewInsets.bottom + 70,
                   left: 0,
                   right: 0,
                   child: Align(
@@ -577,6 +1245,8 @@ class _MessageState extends State<Message> {
                                 style: TextStyle(
                                   fontSize: 14,
                                   fontStyle: FontStyle.italic,
+                                  color:
+                                      const Color.fromARGB(255, 127, 127, 127),
                                 ),
                               ),
                             ),
@@ -596,70 +1266,87 @@ class _MessageState extends State<Message> {
                   ),
                 ),
               // 🔹 INPUT FIELD
-              Container(
-                padding: EdgeInsets.symmetric(horizontal: 10, vertical: 8),
-                margin: EdgeInsets.only(bottom: 16),
-                decoration: BoxDecoration(
-                  color: Colors.white,
-                  boxShadow: [
-                    BoxShadow(
-                      color: Colors.black.withOpacity(0.05),
-                      blurRadius: 5,
-                    ),
-                  ],
-                ),
-                child: Row(
-                  children: [
-                    Expanded(
-                      child: Stack(
-                        children: [
-                          TextField(
-                            controller: _controller,
-                            minLines: 1,
-                            maxLines: 5,
-                            keyboardType: TextInputType.multiline,
-                            textInputAction: TextInputAction.newline,
-                            decoration: InputDecoration(
-                              hintText: "Type a message...",
-                              filled: true,
-                              fillColor: Color(0xFFF1F5F9),
-                              contentPadding: EdgeInsets.only(
-                                right: 30,
-                                left: 12,
-                                top: 12,
-                                bottom: 12,
-                              ),
-                              border: OutlineInputBorder(
-                                borderRadius: BorderRadius.circular(25),
-                                borderSide: BorderSide.none,
+              SafeArea(
+                child: Container(
+                  padding: EdgeInsets.symmetric(horizontal: 10, vertical: 8),
+                  margin: EdgeInsets.zero,
+                  decoration: BoxDecoration(
+                    color: Colors.white,
+                    boxShadow: [
+                      BoxShadow(
+                        color: Colors.black.withOpacity(0.05),
+                        blurRadius: 5,
+                      ),
+                    ],
+                  ),
+                  child: Row(
+                    children: [
+                      Expanded(
+                        child: Stack(
+                          children: [
+                            TextField(
+                              controller: _controller,
+                              focusNode: _textFocusNode,
+                              onTap: () {
+                                shouldAutoScroll = true;
+                              },
+                              minLines: 1,
+                              maxLines: 5,
+                              keyboardType: TextInputType.multiline,
+                              textInputAction: TextInputAction.newline,
+                              decoration: InputDecoration(
+                                hintText: "Type a message...",
+                                filled: true,
+                                fillColor: Color(0xFFF1F5F9),
+                                contentPadding: EdgeInsets.only(
+                                  right: 30,
+                                  left: 12,
+                                  top: 12,
+                                  bottom: 12,
+                                ),
+                                border: OutlineInputBorder(
+                                  borderRadius: BorderRadius.circular(25),
+                                  borderSide: BorderSide.none,
+                                ),
                               ),
                             ),
-                          ),
-                          Positioned(
-                            right: 0,
-                            top: 0,
-                            child: IconButton(
-                              icon: Icon(
-                                Icons.open_in_full,
-                                size: 16,
-                                color: Color.fromARGB(221, 110, 110, 110),
+                            Positioned(
+                              right: 0,
+                              top: 0,
+                              child: IconButton(
+                                icon: Icon(
+                                  Icons.open_in_full,
+                                  size: 16,
+                                  color: Color.fromARGB(221, 110, 110, 110),
+                                ),
+                                onPressed: openFullScreenInput,
                               ),
-                              onPressed: openFullScreenInput,
                             ),
-                          ),
-                        ],
+                          ],
+                        ),
                       ),
-                    ),
-                    SizedBox(width: 8),
-                    GestureDetector(
-                      onTap: sendMessage,
-                      child: CircleAvatar(
-                        radius: 22,
-                        backgroundColor: Color(0XFF2563EB),
-                        child: Icon(Icons.send, color: Colors.white, size: 18),
+                      SizedBox(width: 8),
+                      GestureDetector(
+                        onTap: () async {
+                          shouldAutoScroll = true;
+
+                          sendMessage();
+
+                          final docs = await _getCurrentDocs();
+
+                          WidgetsBinding.instance.addPostFrameCallback((_) {
+                            scrollToBottom(docs);
+                          });
+                        },
+                        child: CircleAvatar(
+                          radius: 22,
+                          backgroundColor: Color(0XFF2563EB),
+                          child:
+                              Icon(Icons.send, color: Colors.white, size: 18),
+                        ),
                       ),
-                    ),
-                  ],
+                    ],
+                  ),
                 ),
               ),
             ],
@@ -677,14 +1364,138 @@ class _MessageState extends State<Message> {
                   return data != null;
                 },
                 onAccept: (DocumentReference ref) async {
-                  HapticFeedback.heavyImpact(); // 👈 strong vibration on delete
+                  HapticFeedback.heavyImpact();
 
-                  await _chatService.deleteMessage(ref);
+                  final result = await showModalBottomSheet<String>(
+                      context: context,
+                      shape: RoundedRectangleBorder(
+                        borderRadius:
+                            BorderRadius.vertical(top: Radius.circular(18)),
+                      ),
+                      builder: (context) {
+                        return Padding(
+                          padding: const EdgeInsets.all(18),
+                          child: Column(
+                            mainAxisSize: MainAxisSize.min,
+                            children: [
+                              // Title
+                              Text(
+                                "Delete message",
+                                style: TextStyle(
+                                  fontSize: 17,
+                                  fontWeight: FontWeight.w600,
+                                  letterSpacing: 0.3,
+                                ),
+                              ),
+
+                              SizedBox(height: 8),
+
+                              // Subtitle
+                              Text(
+                                "Choose how you want to delete this message",
+                                textAlign: TextAlign.center,
+                                style: TextStyle(
+                                  fontSize: 13,
+                                  color: Colors.grey.shade600,
+                                ),
+                              ),
+
+                              SizedBox(height: 20),
+
+                              // 🟦 TEMPORARY DELETE (PRIMARY)
+                              InkWell(
+                                onTap: () =>
+                                    Navigator.pop(context, "temporary"),
+                                borderRadius: BorderRadius.circular(16),
+                                child: Container(
+                                  width: double.infinity,
+                                  padding: EdgeInsets.symmetric(
+                                      vertical: 14, horizontal: 12),
+                                  decoration: BoxDecoration(
+                                    border: Border.all(
+                                        color:
+                                            Color(0XFF2563EB).withOpacity(0.3)),
+                                    borderRadius: BorderRadius.circular(16),
+                                  ),
+                                  child: Row(
+                                    mainAxisAlignment: MainAxisAlignment.center,
+                                    children: [
+                                      Icon(Icons.restore,
+                                          color: Color(0XFF2563EB), size: 20),
+                                      SizedBox(width: 10),
+                                      Expanded(
+                                        child: Text(
+                                          "Temporary (can be restored)",
+                                          style: TextStyle(
+                                            fontSize: 14,
+                                            fontWeight: FontWeight.w500,
+                                            color: Color(0XFF2563EB),
+                                          ),
+                                        ),
+                                      ),
+                                    ],
+                                  ),
+                                ),
+                              ),
+
+                              SizedBox(height: 10),
+
+                              // ⚪ PERMANENT DELETE
+                              InkWell(
+                                onTap: () =>
+                                    Navigator.pop(context, "permanent"),
+                                borderRadius: BorderRadius.circular(16),
+                                child: Container(
+                                  width: double.infinity,
+                                  padding: EdgeInsets.symmetric(
+                                      vertical: 14, horizontal: 12),
+                                  decoration: BoxDecoration(
+                                    border:
+                                        Border.all(color: Colors.red.shade300),
+                                    borderRadius: BorderRadius.circular(16),
+                                  ),
+                                  child: Row(
+                                    mainAxisAlignment: MainAxisAlignment.center,
+                                    children: [
+                                      Icon(Icons.delete_outline,
+                                          color: Colors.red, size: 20),
+                                      SizedBox(width: 10),
+                                      Expanded(
+                                        child: Text(
+                                          "Permanent (Cannot be restored)",
+                                          style: TextStyle(
+                                            fontSize: 14,
+                                            fontWeight: FontWeight.w500,
+                                            color: Colors.red,
+                                          ),
+                                        ),
+                                      ),
+                                    ],
+                                  ),
+                                ),
+                              ),
+
+                              SizedBox(height: 12),
+                            ],
+                          ),
+                        );
+                      });
+
+                  if (result != null) {
+                    await _chatService.deleteMessage(
+                      messageId: ref.id,
+                      senderId: currentUser.uid,
+                      receiverId: widget.contactUserId,
+                      type: result,
+                    );
+                  }
 
                   setState(() {
                     showTrash = false;
                     deletingIndex = null;
                   });
+
+                  // 🔥 NEXT STEP WILL GO HERE (BACKEND LOGIC)
                 },
                 builder: (context, candidateData, rejectedData) {
                   final isActive = candidateData.isNotEmpty;

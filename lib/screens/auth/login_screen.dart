@@ -516,6 +516,8 @@ class _PasswordState extends State<Password> {
                                     ),
                                   );
                                 }
+                              } else {
+                                HapticFeedback.heavyImpact();
                               }
                             },
                       child: _isLoading

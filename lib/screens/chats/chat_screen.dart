@@ -112,7 +112,10 @@ class _ChatState extends State<Chat> {
       loadChats(); // 🔥 updates syncedUsers automatically
     });
 
+
+
     loadChats(); // initial load
+    
   }
 
   Future<void> loadChats() async {
