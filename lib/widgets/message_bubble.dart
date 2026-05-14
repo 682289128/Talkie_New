@@ -1,4 +1,5 @@
 import 'package:flutter/material.dart';
+import 'package:cloud_firestore/cloud_firestore.dart';
 
 class MessageBubble extends StatelessWidget {
   final String status;
@@ -254,30 +255,52 @@ class MessageBubble extends StatelessWidget {
                   // ✅ STATUS DOTS
                   if (isMe)
                     Row(
-                      children: List.generate(
-                        status == "delivered" ? 1 : 2,
-                        (index) {
-                          Color color;
+                      mainAxisSize: MainAxisSize.min,
+                      children: [
+                        Row(
+                          children: List.generate(
+                            (status == "sent" || status == "pending")
+                                ? 1
+                                : 2, // 1 dot sent, 2 dots delivered/seen
+                            (index) {
+                              Color color;
+                              if (status == "pending") {
+                                color = Colors.orangeAccent;
+                              } else if (status == "seen") {
+                                color = Colors.greenAccent;
+                              } else if (status == "delivered") {
+                                color = Colors.white;
+                              } else {
+                                color = Colors.white70;
+                              }
 
-                          if (status == "seen") {
-                            color = Colors.greenAccent;
-                          } else if (status == "delivered") {
-                            color = Colors.white;
-                          } else {
-                            color = Colors.white70;
-                          }
+                              return Container(
+                                margin: EdgeInsets.only(left: 3),
+                                height: 9,
+                                width: 9,
+                                decoration: BoxDecoration(
+                                  color: color,
+                                  shape: BoxShape.circle,
+                                ),
+                              );
+                            },
+                          ),
+                        ),
 
-                          return Container(
-                            margin: EdgeInsets.only(left: 3),
-                            height: 9,
-                            width: 9,
-                            decoration: BoxDecoration(
-                              color: color,
-                              shape: BoxShape.circle,
+                        // ✅ FIXED: Seen time (OUTSIDE loop)
+                        /* if (status == "seen" && msg["seenAt"] != null)
+                          Padding(
+                            padding: const EdgeInsets.only(left: 6),
+                            child: Text(
+                              _formatSeenTime(msg["seenAt"]),
+                              style: TextStyle(
+                                fontSize: 11,
+                                color: Colors.white70,
+                                fontStyle: FontStyle.italic,
+                              ),
                             ),
-                          );
-                        },
-                      ),
+                          ),*/
+                      ],
                     ),
                 ],
               ),
@@ -286,5 +309,28 @@ class MessageBubble extends StatelessWidget {
         ),
       ),
     );
+  }
+
+  String _formatSeenTime(dynamic timestamp) {
+    try {
+      DateTime time;
+
+      if (timestamp is Timestamp) {
+        time = timestamp.toDate();
+      } else {
+        return "";
+      }
+
+      int hour = time.hour;
+      final minute = time.minute.toString().padLeft(2, '0');
+      final period = hour >= 12 ? "PM" : "AM";
+
+      hour = hour % 12;
+      if (hour == 0) hour = 12;
+
+      return "$hour:$minute $period";
+    } catch (e) {
+      return "";
+    }
   }
 }

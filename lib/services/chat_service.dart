@@ -25,6 +25,7 @@ class ChatService {
     required String senderId,
     required String receiverId,
     required String text,
+    String? initialStatus,
     String? replyTo,
     String? replyToId,
   }) async {
@@ -52,7 +53,7 @@ class ChatService {
       "senderName": senderName, // 👈 TEMP (replace later with real name)
       "createdAt": FieldValue.serverTimestamp(),
       "localTime": DateFormat('hh:mm a').format(now),
-      "status": "sent",
+      "status": initialStatus ?? "sent",
       "seen": false,
       "replyTo": replyTo,
       "replyToId": replyToId,
@@ -69,6 +70,27 @@ class ChatService {
       "lastMessage": text,
       "lastMessageTime": FieldValue.serverTimestamp(),
     }, SetOptions(merge: true));
+  }
+
+  Future<void> retryPendingMessages({
+    required String senderId,
+    required String receiverId,
+  }) async {
+    final chatId = getChatId(senderId, receiverId);
+
+    final snapshot = await _firestore
+        .collection("chats")
+        .doc(chatId)
+        .collection("messages")
+        .where("senderId", isEqualTo: senderId)
+        .where("status", isEqualTo: "pending")
+        .get();
+
+    for (var doc in snapshot.docs) {
+      await doc.reference.update({
+        "status": "sent",
+      });
+    }
   }
 
   Future<void> updateMessage({
@@ -108,25 +130,24 @@ class ChatService {
         _firestore.collection("chats").doc(chatId).collection("messages");
 
     final messageRef = messagesRef.doc(messageId);
-    
 
     // 🔴 DELETE LOGIC
-if (type == "temporary") {
-  await messageRef.update({
-    "isDeleted": 1,
-    "deletedType": "temporary",
-    "deletedAt": FieldValue.serverTimestamp(),
-    "deletedTime": DateFormat('hh:mm a').format(DateTime.now()),
-  });
-} else if (type == "permanent") {
-  await messageRef.update({
-    "isDeleted": 1,
-    "deletedType": "permanent",
-    "deletedAt": FieldValue.serverTimestamp(),
-    "deletedTime": DateFormat('hh:mm a').format(DateTime.now()),
-    "text": "",
-  });
-}
+    if (type == "temporary") {
+      await messageRef.update({
+        "isDeleted": 1,
+        "deletedType": "temporary",
+        "deletedAt": FieldValue.serverTimestamp(),
+        "deletedTime": DateFormat('hh:mm a').format(DateTime.now()),
+      });
+    } else if (type == "permanent") {
+      await messageRef.update({
+        "isDeleted": 1,
+        "deletedType": "permanent",
+        "deletedAt": FieldValue.serverTimestamp(),
+        "deletedTime": DateFormat('hh:mm a').format(DateTime.now()),
+        "text": "",
+      });
+    }
 
     // 🔥 GET THE REAL LAST MESSAGE (even if deleted)
     final lastDoc =
@@ -203,55 +224,79 @@ if (type == "temporary") {
     }, SetOptions(merge: true));
   }
 
+// 🔥 MARK MESSAGES AS DELIVERED
+  Future<void> markMessagesAsDelivered({
+    required String currentUserId,
+    required String otherUserId,
+  }) async {
+    final chatId = getChatId(currentUserId, otherUserId);
 
-//call this when user recieves the message(delivered)
-  Future<void> markAsDelivered({
-  required String senderId,
-  required String receiverId,
+    final userDoc =
+        await _firestore.collection("users").doc(currentUserId).get();
+
+    final isOnline = userDoc.data()?["isOnline"] ?? false;
+
+    if (!isOnline) return;
+
+    final snapshot = await _firestore
+        .collection("chats")
+        .doc(chatId)
+        .collection("messages")
+        .where("receiverId", isEqualTo: currentUserId)
+        .where("status", isEqualTo: "sent")
+        .get();
+
+    for (var doc in snapshot.docs) {
+      await doc.reference.update({
+        "status": "delivered",
+      });
+    }
+  }
+
+// 🔥 MARK MESSAGES AS SEEN
+Future<void> markMessagesAsSeen({
+  required String currentUserId,
+  required String otherUserId,
 }) async {
-  final chatId = getChatId(senderId, receiverId);
+  final chatId = getChatId(currentUserId, otherUserId);
 
-  final messagesRef = _firestore
+  final snapshot = await _firestore
       .collection("chats")
       .doc(chatId)
-      .collection("messages");
-
-  final query = await messagesRef
-      .where("receiverId", isEqualTo: receiverId)
-      .where("status", isEqualTo: "sent")
+      .collection("messages")
+      .where("receiverId", isEqualTo: currentUserId)
+      .where("status", isEqualTo: "delivered")
       .get();
 
-  for (var doc in query.docs) {
+  for (var doc in snapshot.docs) {
     await doc.reference.update({
-      "status": "delivered",
-      "deliveredAt": FieldValue.serverTimestamp(),
+      "status": "seen",
+      "seen": true,
+      "seenAt": FieldValue.serverTimestamp(), // 🔥 ADD THIS
     });
   }
 }
 
 //call this when user enters the chat(seen)
-Future<void> markAsSeen({
-  required String senderId,
-  required String receiverId,
-}) async {
-  final chatId = getChatId(senderId, receiverId);
+  Future<void> markAsSeen({
+    required String senderId,
+    required String receiverId,
+  }) async {
+    final chatId = getChatId(senderId, receiverId);
 
-  final messagesRef = _firestore
-      .collection("chats")
-      .doc(chatId)
-      .collection("messages");
+    final messagesRef =
+        _firestore.collection("chats").doc(chatId).collection("messages");
 
-  final query = await messagesRef
-      .where("receiverId", isEqualTo: receiverId)
-      .where("status", whereIn: ["sent", "delivered"])
-      .get();
+    final query = await messagesRef
+        .where("receiverId", isEqualTo: receiverId)
+        .where("status", whereIn: ["sent", "delivered"]).get();
 
-  for (var doc in query.docs) {
-    await doc.reference.update({
-      "status": "seen",
-      "seen": true,
-      "seenAt": FieldValue.serverTimestamp(),
-    });
+    for (var doc in query.docs) {
+      await doc.reference.update({
+        "status": "seen",
+        "seen": true,
+        "seenAt": FieldValue.serverTimestamp(),
+      });
+    }
   }
-}
 }

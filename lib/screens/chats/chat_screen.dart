@@ -8,6 +8,7 @@ import 'package:talkie_new/screens/profile/profile_screen.dart';
 //import 'package:talkie_new/screens/chats/contact_sync.dart';
 import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:firebase_auth/firebase_auth.dart';
+import 'package:talkie_new/services/chat_service.dart';
 
 class Chat extends StatefulWidget {
   const Chat({
@@ -112,10 +113,7 @@ class _ChatState extends State<Chat> {
       loadChats(); // 🔥 updates syncedUsers automatically
     });
 
-
-
     loadChats(); // initial load
-    
   }
 
   Future<void> loadChats() async {
@@ -296,13 +294,13 @@ class _ChatState extends State<Chat> {
           final currentUser = FirebaseAuth.instance.currentUser!;
           final chats = snapshot.data!.docs;
 
-final filtered = syncedUsers.where((user) {
-  final name = (user["name"] ?? "").toLowerCase();
-  final phone = (user["phone"] ?? "").toLowerCase();
-  final query = _searchController.text.toLowerCase();
+          final filtered = syncedUsers.where((user) {
+            final name = (user["name"] ?? "").toLowerCase();
+            final phone = (user["phone"] ?? "").toLowerCase();
+            final query = _searchController.text.toLowerCase();
 
-  return name.contains(query) || phone.contains(query);
-}).toList();
+            return name.contains(query) || phone.contains(query);
+          }).toList();
           if (_searchController.text.isNotEmpty && filtered.isEmpty) {
             return Center(
               child: Text("No Contacts Found",

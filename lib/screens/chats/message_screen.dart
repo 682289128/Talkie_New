@@ -4,6 +4,7 @@ import 'package:firebase_auth/firebase_auth.dart';
 import 'package:talkie_new/services/chat_service.dart';
 import 'package:talkie_new/widgets/message_bubble.dart';
 import 'package:flutter/services.dart';
+import 'dart:io';
 import 'package:scrollable_positioned_list/scrollable_positioned_list.dart';
 
 class Message extends StatefulWidget {
@@ -22,7 +23,7 @@ class Message extends StatefulWidget {
   State<Message> createState() => _MessageState();
 }
 
-class _MessageState extends State<Message> {
+class _MessageState extends State<Message> with WidgetsBindingObserver {
   bool isNavigatingToReply = false;
   bool shouldAutoScroll = true;
   bool hasInitiallyScrolled = false;
@@ -86,13 +87,25 @@ class _MessageState extends State<Message> {
       }
     }
 
+    Future<bool> hasInternet() async {
+      try {
+        final result = await InternetAddress.lookup('google.com');
+        return result.isNotEmpty && result[0].rawAddress.isNotEmpty;
+      } catch (_) {
+        return false;
+      }
+    }
+
     // 🟢 NORMAL SEND
+    final internet = await hasInternet();
+
     await _chatService.sendMessage(
       senderId: currentUser.uid,
       receiverId: widget.contactUserId,
       text: messageText,
       replyTo: replyingTo?["text"],
       replyToId: replyingTo?["messageId"],
+      initialStatus: internet ? "sent" : "pending",
     );
 
     _controller.clear();
@@ -117,10 +130,118 @@ class _MessageState extends State<Message> {
     final today = DateTime(now.year, now.month, now.day);
     final msgDay = DateTime(date.year, date.month, date.day);
 
-    if (msgDay == today) return "Today";
-    if (msgDay == today.subtract(Duration(days: 1))) return "Yesterday";
+    final difference = today.difference(msgDay).inDays;
 
-    return "${date.day}/${date.month}/${date.year}"; // or use intl package for nicer formatting
+    final time = _formatTime(date);
+
+    // 🟢 Today
+    if (difference == 0) {
+      return "Today at $time";
+    }
+
+    // 🟡 Yesterday
+    if (difference == 1) {
+      return "Yesterday at $time";
+    }
+
+    // 🔵 2–5 days ago → weekday
+    if (difference >= 2 && difference <= 5) {
+      return "${_weekdayName(date.weekday)} at $time";
+    }
+
+    // 🟣 older → full date
+    return "${date.day} ${_monthName(date.month)} ${date.year} at $time";
+  }
+
+  String _formatTime(DateTime date) {
+    int hour = date.hour;
+    final minute = date.minute.toString().padLeft(2, '0');
+
+    final period = hour >= 12 ? "PM" : "AM";
+
+    hour = hour % 12;
+    if (hour == 0) hour = 12;
+
+    return "$hour:$minute $period";
+  }
+
+  String _weekdayName(int weekday) {
+    switch (weekday) {
+      case 1:
+        return "Monday";
+      case 2:
+        return "Tuesday";
+      case 3:
+        return "Wednesday";
+      case 4:
+        return "Thursday";
+      case 5:
+        return "Friday";
+      case 6:
+        return "Saturday";
+      case 7:
+        return "Sunday";
+      default:
+        return "";
+    }
+  }
+
+  String _monthName(int month) {
+    switch (month) {
+      case 1:
+        return "January";
+      case 2:
+        return "February";
+      case 3:
+        return "March";
+      case 4:
+        return "April";
+      case 5:
+        return "May";
+      case 6:
+        return "June";
+      case 7:
+        return "July";
+      case 8:
+        return "August";
+      case 9:
+        return "September";
+      case 10:
+        return "October";
+      case 11:
+        return "November";
+      case 12:
+        return "December";
+      default:
+        return "";
+    }
+  }
+
+  String formatSeenTime(DateTime date) {
+    int hour = date.hour;
+    final minute = date.minute.toString().padLeft(2, '0');
+
+    final period = hour >= 12 ? "PM" : "AM";
+
+    hour = hour % 12;
+    if (hour == 0) hour = 12;
+
+    return "$hour:$minute $period";
+  }
+
+  Widget seenText(Timestamp? seenAt) {
+    if (seenAt == null) return const SizedBox.shrink();
+
+    final date = seenAt.toDate();
+
+    return Text(
+      "Seen • ${formatSeenTime(date)}",
+      style: const TextStyle(
+        fontSize: 10,
+        color: Colors.grey,
+        fontStyle: FontStyle.italic,
+      ),
+    );
   }
 
   void openFullScreenInput() {
@@ -209,26 +330,34 @@ class _MessageState extends State<Message> {
 
   Widget messageStatusIcon(String status) {
     Color baseColor;
+    int dotCount = 1; // default = single dot
+
     switch (status) {
+      case "pending":
+        baseColor = Colors.orangeAccent; // 🟠 sending state
+        dotCount = 1;
+        break;
+
       case "sent":
-        baseColor = const Color.fromARGB(
-          255,
-          239,
-          239,
-          239,
-        ); // visible on blue bubble
+        baseColor = const Color.fromARGB(255, 239, 239, 239);
+        dotCount = 1;
         break;
+
       case "delivered":
-        baseColor = const Color.fromARGB(255, 255, 255, 255); // hand/thumb feel
+        baseColor = const Color.fromARGB(255, 255, 255, 255);
+        dotCount = 2;
         break;
+
+      case "seen":
       case "read":
-        baseColor = Colors.greenAccent; // glowing eyes
+        baseColor = Colors.greenAccent;
+        dotCount = 2;
         break;
+
       default:
         baseColor = Colors.white70;
+        dotCount = 1;
     }
-
-    int dotCount = status == "sent" ? 1 : 2;
 
     return Row(
       mainAxisSize: MainAxisSize.min,
@@ -240,7 +369,7 @@ class _MessageState extends State<Message> {
           decoration: BoxDecoration(
             color: baseColor,
             shape: BoxShape.circle,
-            boxShadow: status == "read"
+            boxShadow: status == "seen" || status == "read"
                 ? [
                     BoxShadow(
                       color: Colors.lightBlueAccent.withOpacity(0.7),
@@ -251,7 +380,7 @@ class _MessageState extends State<Message> {
                 : status == "delivered"
                     ? [
                         BoxShadow(
-                          color: Colors.amberAccent.withOpacity(0.5),
+                          color: Colors.amberAccent.withOpacity(0.4),
                           blurRadius: 4,
                           spreadRadius: 0.5,
                         ),
@@ -365,6 +494,60 @@ class _MessageState extends State<Message> {
   }
 
   @override
+  void initState() {
+    super.initState();
+
+    WidgetsBinding.instance.addObserver(this);
+
+    _setOnlineStatus(true);
+
+    FirebaseFirestore.instance
+        .collection("users")
+        .doc(currentUser.uid)
+        .snapshots()
+        .listen((userSnapshot) async {
+      final isOnline = userSnapshot.data()?["isOnline"] ?? false;
+
+      if (isOnline) {
+        await _chatService.markMessagesAsDelivered(
+          currentUserId: currentUser.uid,
+          otherUserId: widget.contactUserId,
+        );
+      }
+    });
+  }
+
+  @override
+  void didChangeAppLifecycleState(AppLifecycleState state) {
+    if (state == AppLifecycleState.resumed) {
+      _setOnlineStatus(true);
+      _chatService.retryPendingMessages(
+        senderId: currentUser.uid,
+        receiverId: widget.contactUserId,
+      );
+    } else if (state == AppLifecycleState.detached) {
+      _setOnlineStatus(false);
+    }
+  }
+
+  Future<void> _setOnlineStatus(bool isOnline) async {
+    await FirebaseFirestore.instance
+        .collection("users")
+        .doc(currentUser.uid)
+        .update({
+      "isOnline": isOnline,
+      "lastSeen": FieldValue.serverTimestamp(),
+    });
+  }
+
+  @override
+  void dispose() {
+    WidgetsBinding.instance.removeObserver(this);
+    _setOnlineStatus(false);
+    super.dispose();
+  }
+
+  @override
   Widget build(BuildContext context) {
     return Scaffold(
       backgroundColor: Color(0xFFF8FAFC),
@@ -453,6 +636,13 @@ class _MessageState extends State<Message> {
                         if (docs.isNotEmpty) {
                           scrollToBottom(docs);
                         }
+
+                        WidgetsBinding.instance.addPostFrameCallback((_) async {
+                          await _chatService.markMessagesAsSeen(
+                            currentUserId: currentUser.uid,
+                            otherUserId: widget.contactUserId,
+                          );
+                        });
 // 🔥 AUTO SCROLL TO LAST MESSAGE WHEN CHAT OPENS
                         WidgetsBinding.instance.addPostFrameCallback((_) {
                           if (docs.isNotEmpty && !hasInitiallyScrolled) {
@@ -515,7 +705,7 @@ class _MessageState extends State<Message> {
 
                             final currDate = (msg["createdAt"] is Timestamp)
                                 ? (msg["createdAt"] as Timestamp).toDate()
-                                : DateTime.fromMillisecondsSinceEpoch(0);
+                                : DateTime.now();
 
                             final isDeleted = msg["isDeleted"] == 1;
                             final isEdited = msg["edited"] == 1;
