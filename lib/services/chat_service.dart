@@ -1,8 +1,12 @@
 import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:intl/intl.dart';
+import '../database/db_helper.dart';
+
+final DBHelper _dbHelper = DBHelper();
 
 class ChatService {
   final _firestore = FirebaseFirestore.instance;
+  final DBHelper _dbHelper = DBHelper();
 
   String getChatId(String user1, String user2) {
     List<String> ids = [user1, user2];
@@ -22,6 +26,7 @@ class ChatService {
   }
 
   Future<void> sendMessage({
+    required String messageId,
     required String senderId,
     required String receiverId,
     required String text,
@@ -46,7 +51,21 @@ class ChatService {
         ? userData["name"]
         : "Unknown";
 
+    final docRef = messageId != null
+        ? _firestore
+            .collection("chats")
+            .doc(chatId)
+            .collection("messages")
+            .doc(messageId)
+        : _firestore
+            .collection("chats")
+            .doc(chatId)
+            .collection("messages")
+            .doc();
+
+    final realMessageId = docRef.id;
     final messageData = {
+      "id": realMessageId,
       "text": text,
       "senderId": senderId,
       "receiverId": receiverId,
@@ -59,17 +78,55 @@ class ChatService {
       "replyToId": replyToId,
     };
 
-    await _firestore
-        .collection("chats")
-        .doc(chatId)
-        .collection("messages")
-        .add(messageData);
+    await docRef.set(messageData);
+
+
+    await _dbHelper.insertMessage({
+      "id": messageId,
+      "senderId": senderId,
+      "receiverId": receiverId,
+      "text": text,
+      "replyTo": replyTo,
+      "replyToId": replyToId,
+      "status": "sent",
+      "createdAt": now.millisecondsSinceEpoch,
+      "localTime": DateFormat('hh:mm a').format(now),
+      "isDeleted": 0,
+      "edited": 0
+    });
+
+    await _dbHelper.printMessages();
 
     await _firestore.collection("chats").doc(chatId).set({
       "participants": [senderId, receiverId],
       "lastMessage": text,
       "lastMessageTime": FieldValue.serverTimestamp(),
     }, SetOptions(merge: true));
+  }
+
+  Future<void> saveMessageLocally({
+    required String messageId,
+    required String senderId,
+    required String receiverId,
+    required String text,
+    String? replyTo,
+    String? replyToId,
+  }) async {
+    final now = DateTime.now();
+
+    await _dbHelper.insertMessage({
+      "id": messageId,
+      "senderId": senderId,
+      "receiverId": receiverId,
+      "text": text,
+      "replyTo": replyTo,
+      "replyToId": replyToId,
+      "status": "pending",
+      "createdAt": now.millisecondsSinceEpoch,
+      "localTime": DateFormat('hh:mm a').format(now),
+      "isDeleted": 0,
+      "edited": 0,
+    });
   }
 
   Future<void> retryPendingMessages({
@@ -100,8 +157,9 @@ class ChatService {
     required String receiverId,
   }) async {
     try {
-      final chatId = getChatId(senderId, receiverId); // ✅ correct
+      final chatId = getChatId(senderId, receiverId);
 
+      // 1. FIRESTORE UPDATE
       await _firestore
           .collection("chats")
           .doc(chatId)
@@ -111,6 +169,9 @@ class ChatService {
         "text": newText,
         "edited": 1,
       });
+
+      // 2. LOCAL SQLITE UPDATE (🔥 MISSING PART)
+      await _dbHelper.updateMessage(messageId, newText);
 
       print("✅ Message updated successfully");
     } catch (e) {
@@ -126,32 +187,40 @@ class ChatService {
   }) async {
     final chatId = getChatId(senderId, receiverId);
 
-    final messagesRef =
-        _firestore.collection("chats").doc(chatId).collection("messages");
+    final messageRef = _firestore
+        .collection("chats")
+        .doc(chatId)
+        .collection("messages")
+        .doc(messageId);
 
-    final messageRef = messagesRef.doc(messageId);
+    final now = DateTime.now();
 
-    // 🔴 DELETE LOGIC
     if (type == "temporary") {
       await messageRef.update({
         "isDeleted": 1,
         "deletedType": "temporary",
         "deletedAt": FieldValue.serverTimestamp(),
-        "deletedTime": DateFormat('hh:mm a').format(DateTime.now()),
+        "deletedTime": DateFormat('hh:mm a').format(now),
       });
-    } else if (type == "permanent") {
+
+      await _dbHelper.markMessageDeleted(messageId, 1, "temporary");
+    } else {
       await messageRef.update({
         "isDeleted": 1,
         "deletedType": "permanent",
         "deletedAt": FieldValue.serverTimestamp(),
-        "deletedTime": DateFormat('hh:mm a').format(DateTime.now()),
+        "deletedTime": DateFormat('hh:mm a').format(now),
         "text": "",
       });
+
+      await _dbHelper.markMessageDeleted(messageId, 1, "permenent");
     }
 
-    // 🔥 GET THE REAL LAST MESSAGE (even if deleted)
-    final lastDoc =
-        await messagesRef.orderBy("createdAt", descending: true).limit(1).get();
+    // update last message (keep your existing logic)
+    final lastDoc = await messageRef.parent
+        .orderBy("createdAt", descending: true)
+        .limit(1)
+        .get();
 
     String newLastMessage = "";
     Timestamp? newTime;
@@ -160,11 +229,7 @@ class ChatService {
       final data = lastDoc.docs.first.data();
       final isDeleted = data["isDeleted"] == 1;
 
-      if (isDeleted) {
-        newLastMessage = "🗑️ Message deleted";
-      } else {
-        newLastMessage = data["text"] ?? "";
-      }
+      newLastMessage = isDeleted ? "🗑️ Message deleted" : (data["text"] ?? "");
 
       newTime = data["createdAt"];
     }
@@ -192,7 +257,12 @@ class ChatService {
       "isDeleted": 0,
       "deletedType": null,
       "deletedAt": null,
+      "deletedTime": null,
+      "restored": 1,
     });
+
+// 🔥 RESTORE SQLITE TOO
+    await _dbHelper.restoreMessage(messageId);
 
     // 🔥 OPTIONAL: update lastMessage if restored message is latest
     final messagesRef =
@@ -231,13 +301,6 @@ class ChatService {
   }) async {
     final chatId = getChatId(currentUserId, otherUserId);
 
-    final userDoc =
-        await _firestore.collection("users").doc(currentUserId).get();
-
-    final isOnline = userDoc.data()?["isOnline"] ?? false;
-
-    if (!isOnline) return;
-
     final snapshot = await _firestore
         .collection("chats")
         .doc(chatId)
@@ -254,28 +317,28 @@ class ChatService {
   }
 
 // 🔥 MARK MESSAGES AS SEEN
-Future<void> markMessagesAsSeen({
-  required String currentUserId,
-  required String otherUserId,
-}) async {
-  final chatId = getChatId(currentUserId, otherUserId);
+  Future<void> markMessagesAsSeen({
+    required String currentUserId,
+    required String otherUserId,
+  }) async {
+    final chatId = getChatId(currentUserId, otherUserId);
 
-  final snapshot = await _firestore
-      .collection("chats")
-      .doc(chatId)
-      .collection("messages")
-      .where("receiverId", isEqualTo: currentUserId)
-      .where("status", isEqualTo: "delivered")
-      .get();
+    final snapshot = await _firestore
+        .collection("chats")
+        .doc(chatId)
+        .collection("messages")
+        .where("receiverId", isEqualTo: currentUserId)
+        .where("status", isEqualTo: "delivered")
+        .get();
 
-  for (var doc in snapshot.docs) {
-    await doc.reference.update({
-      "status": "seen",
-      "seen": true,
-      "seenAt": FieldValue.serverTimestamp(), // 🔥 ADD THIS
-    });
+    for (var doc in snapshot.docs) {
+      await doc.reference.update({
+        "status": "seen",
+        "seen": true,
+        "seenAt": FieldValue.serverTimestamp(), // 🔥 ADD THIS
+      });
+    }
   }
-}
 
 //call this when user enters the chat(seen)
   Future<void> markAsSeen({
