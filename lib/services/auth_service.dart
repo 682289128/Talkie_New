@@ -31,7 +31,9 @@ class AuthService {
         'uid': uid,
         'name': name,
         'email': email,
-        'phone': phone,
+        'phone': phone.replaceAll(RegExp(r'\D'), '')
+               .replaceFirst(RegExp(r'^237'), '')
+               .replaceFirst(RegExp(r'^0'), ''),
         'createdAt': FieldValue.serverTimestamp(),
       });
 

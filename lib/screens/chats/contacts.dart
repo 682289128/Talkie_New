@@ -3,9 +3,10 @@ import 'package:talkie_new/screens/chats/addContact_screen.dart';
 import 'package:firebase_auth/firebase_auth.dart';
 import 'package:talkie_new/screens/chats/message_screen.dart';
 import 'package:talkie_new/database/db_helper.dart';
+import 'package:share_plus/share_plus.dart';
+import 'package:url_launcher/url_launcher.dart';
 import 'dart:io';
 import 'dart:async';
-import 'package:talkie_new/services/contact_syn_service.dart';
 
 class Contacts extends StatefulWidget {
   const Contacts({Key? key}) : super(key: key);
@@ -21,24 +22,163 @@ class _ContactsState extends State<Contacts>
   final TextEditingController _searchController = TextEditingController();
   String _searchText = "";
   List<Map<String, dynamic>> contacts = [];
+  String? hoveredContact;
 
   Future<void> loadContactsFromSQLite() async {
     final user = FirebaseAuth.instance.currentUser;
     if (user == null) return;
 
-    final data = await DBHelper().database;
+    final uid = FirebaseAuth.instance.currentUser!.uid;
+    final db = DBHelper(uid);
+    final data = await db.database;
 
     final result = await data.query(
       'contacts',
       orderBy: 'name COLLATE NOCASE ASC',
     );
+
+    // 🔥 ADD THIS SAFETY CHECK (IMPORTANT)\
+
+    print("⚠️ non_talkie_contacts table missing:");
+
     print("📦 SQLITE CONTACTS: $result");
+
     setState(() {
       contacts = result;
     });
   }
 
+  Future<void> inviteViaWhatsApp(Map<String, dynamic> data) async {
+    String phone = (data["phone"] ?? "").toString();
 
+    // Remove spaces, +, -, ()
+    phone = phone.replaceAll(RegExp(r'[^0-9]'), '');
+
+    const talkieLink =
+        "https://play.google.com/store/apps/details?id=com.yourcompany.talkie";
+
+    final message = Uri.encodeComponent(
+      "Hey! 👋\n\nI've been using Talkie and I think you'd really like it. It's a fast and simple way for us to chat and stay connected.\n\nDownload Talkie here:\n$talkieLink\n\nHope to see you there! 😊",
+    );
+
+    final uri = Uri.parse(
+      "https://wa.me/$phone?text=$message",
+    );
+
+    await launchUrl(
+      uri,
+      mode: LaunchMode.externalApplication,
+    );
+  }
+
+  Future<void> inviteViaSMS(Map<String, dynamic> data) async {
+    String phone = (data["phone"] ?? "").toString();
+
+    final smsUri = Uri(
+      scheme: 'sms',
+      path: phone,
+      queryParameters: {
+        'body':
+            "Hey! 👋\n\nI've been using Talkie and I think you'd really like it. It's a fast and simple way for us to chat and stay connected\n\nhttps://play.google.com/store/apps/details?id=com.yourcompany.talkie",
+      },
+    );
+
+    await launchUrl(
+      smsUri,
+      mode: LaunchMode.externalApplication,
+    );
+  }
+
+  Future<void> showInviteOptions(Map<String, dynamic> data) async {
+    showModalBottomSheet(
+      context: context,
+      shape: const RoundedRectangleBorder(
+        borderRadius: BorderRadius.vertical(
+          top: Radius.circular(20),
+        ),
+      ),
+      builder: (context) {
+        return SafeArea(
+            child: Padding(
+          padding: const EdgeInsets.all(12),
+          child: Wrap(
+            runSpacing: 4,
+            children: [
+              Material(
+                color: Colors.transparent,
+                child: ListTile(
+                  shape: RoundedRectangleBorder(
+                    borderRadius: BorderRadius.circular(12),
+                  ),
+                  splashColor: Colors.green.withOpacity(0.15),
+                  hoverColor: Colors.green.withOpacity(0.08),
+                  leading: const Icon(
+                    Icons.chat,
+                    color: Colors.green,
+                  ),
+                  title: const Text("WhatsApp"),
+                  onTap: () {
+                    Navigator.pop(context);
+                    inviteViaWhatsApp(data);
+                  },
+                ),
+              ),
+              Material(
+                color: Colors.transparent,
+                child: ListTile(
+                  shape: RoundedRectangleBorder(
+                    borderRadius: BorderRadius.circular(12),
+                  ),
+                  splashColor: Colors.blue.withOpacity(0.15),
+                  hoverColor: Colors.blue.withOpacity(0.08),
+                  leading: const Icon(
+                    Icons.sms,
+                    color: Colors.blue,
+                  ),
+                  title: const Text("SMS"),
+                  onTap: () {
+                    Navigator.pop(context);
+                    inviteViaSMS(data);
+                  },
+                ),
+              ),
+              Material(
+                color: Colors.transparent,
+                child: ListTile(
+                  shape: RoundedRectangleBorder(
+                    borderRadius: BorderRadius.circular(12),
+                  ),
+                  splashColor: Colors.grey.withOpacity(0.15),
+                  hoverColor: Colors.grey.withOpacity(0.08),
+                  leading: const Icon(Icons.share),
+                  title: const Text("More..."),
+                  onTap: () {
+                    Navigator.pop(context);
+                    inviteContact(data);
+                  },
+                ),
+              ),
+            ],
+          ),
+        ));
+      },
+    );
+  }
+
+  Future<void> inviteContact(Map<String, dynamic> data) async {
+    final name = data["name"] ?? "Friend";
+
+    // Replace this with your Play Store/App Store link later
+    const talkieLink =
+        "https://play.google.com/store/apps/details?id=com.yourcompany.talkie";
+
+    await Share.share(
+      "Hi $name! 👋\n\n"
+      "I'm using Talkie to chat and stay connected.\n\n"
+      "Download it here:\n$talkieLink",
+      subject: "Join me on Talkie",
+    );
+  }
 
   @override
   void initState() {
@@ -51,7 +191,6 @@ class _ContactsState extends State<Contacts>
     });
 
     loadContactsFromSQLite(); // ONLY LOCAL DB
-
   }
 
   Future<void> initializeContacts() async {
@@ -111,6 +250,22 @@ class _ContactsState extends State<Contacts>
 
   @override
   Widget build(BuildContext context) {
+    // 🔍 Filter contacts by search text
+    final filteredContacts = contacts.where((contact) {
+      if (_searchText.isEmpty) return true;
+
+      final name = (contact["name"] ?? "").toString().toLowerCase();
+      final phone = (contact["phone"] ?? "").toString().toLowerCase();
+
+      return name.contains(_searchText) || phone.contains(_searchText);
+    }).toList();
+
+// Split contacts
+    final talkieContacts =
+        filteredContacts.where((c) => (c["isOnTalkie"] ?? 0) == 1).toList();
+
+    final nonTalkieContacts =
+        filteredContacts.where((c) => (c["isOnTalkie"] ?? 0) == 0).toList();
     return Scaffold(
       appBar: AppBar(
         centerTitle: false,
@@ -195,14 +350,18 @@ class _ContactsState extends State<Contacts>
                     PopupMenuButton<String>(
                       padding: EdgeInsets.zero,
                       icon: Icon(Icons.more_vert, color: Colors.white),
-                      onSelected: (value) {
+                      onSelected: (value) async {
                         if (value == "add") {
-                          Navigator.push(
+                          final result = await Navigator.push(
                             context,
                             MaterialPageRoute(
                               builder: (context) => AddContact(),
                             ),
                           );
+
+                          if (result == true) {
+                            loadContactsFromSQLite(); // 🔥 refresh list
+                          }
                         } else if (value == "invite") {
                           print("Invite clicked");
                         } else if (value == "settings") {
@@ -263,123 +422,250 @@ class _ContactsState extends State<Contacts>
         children: [
           // CONTACT COUNT TEXT (NOW FROM SQLITE ONLY)
           Container(
+            color: Colors.white,
             alignment: Alignment.centerLeft,
             padding: EdgeInsets.symmetric(horizontal: 16, vertical: 10),
             child: Text(
-              "${contacts.length} Contacts",
+              "${talkieContacts.length} Contacts",
               style: TextStyle(
                 fontSize: 18,
-                fontWeight: FontWeight.bold,
-                color: Color(0XFF2563EB),
+                fontWeight: FontWeight.w600,
+                color: const Color.fromARGB(255, 39, 39, 39),
               ),
             ),
           ),
 
           // CONTACT LIST (ONLY SQLITE)
+
           Expanded(
-            child: contacts.isEmpty
-                ? Center(child: Text("No contacts found"))
-                : Builder(
-                    builder: (context) {
-                      // FILTER SEARCH
-                      final filteredContacts = contacts.where((c) {
-                        final name = (c["name"] ?? "").toLowerCase();
-                        final phone = (c["phone"] ?? "").toLowerCase();
-
-                        return name.contains(_searchText) ||
-                            phone.contains(_searchText);
-                      }).toList();
-
-                      return ListView.builder(
-                        itemCount: filteredContacts.length,
-                        itemBuilder: (context, index) {
-                          final data = filteredContacts[index];
-
-                          return InkWell(
-                            onTap: () {
-                              Navigator.push(
-                                context,
-                                MaterialPageRoute(
-                                  builder: (context) => Message(
-                                    contactName: data["name"] ?? "",
-                                    contactUserId: data["userId"] ?? "",
-                                    contactImage: data["imagePath"] ?? "",
+            child: (_searchText.isEmpty
+                    ? contacts.isEmpty
+                    : talkieContacts.isEmpty && nonTalkieContacts.isEmpty)
+                ? Center(
+                    child: Text(
+                      _searchText.isEmpty
+                          ? "No contacts found"
+                          : "No results for \"$_searchText\"",
+                    ),
+                  )
+                : ListView(
+                    children: [
+                      // 🔵 TALKIE CONTACTS (TOP)
+                      if (talkieContacts.isNotEmpty)
+                        Column(
+                          crossAxisAlignment: CrossAxisAlignment.start,
+                          children: [
+                            Container(
+                              color: Colors.white,
+                              width: double.infinity,
+                              child: Padding(
+                                padding: EdgeInsets.symmetric(
+                                    horizontal: 16, vertical: 8),
+                                child: Text(
+                                  "Contacts on Talkie",
+                                  style: TextStyle(
+                                    fontSize: 14,
+                                    fontWeight: FontWeight.w500,
+                                    color: const Color.fromARGB(
+                                        255, 105, 104, 104),
                                   ),
                                 ),
-                              );
-                            },
-                            child: Container(
-                              margin: EdgeInsets.symmetric(
-                                  horizontal: 12, vertical: 6),
-                              padding: EdgeInsets.all(12),
-                              decoration: BoxDecoration(
-                                color: Colors.white,
-                                borderRadius: BorderRadius.circular(4),
-                              ),
-                              child: Row(
-                                children: [
-                                  CircleAvatar(
-                                    radius: 24,
-                                    backgroundColor: Colors.grey.shade200,
-                                    backgroundImage:
-                                        (data["imagePath"] != null &&
-                                                data["imagePath"]
-                                                    .toString()
-                                                    .isNotEmpty)
-                                            ? FileImage(File(data["imagePath"]))
-                                            : null,
-                                    child: (data["imagePath"] == null ||
-                                            data["imagePath"]
-                                                .toString()
-                                                .isEmpty)
-                                        ? Text(
-                                            data["name"] != null &&
-                                                    data["name"].isNotEmpty
-                                                ? data["name"][0]
-                                                : "?",
-                                          )
-                                        : null,
-                                  ),
-                                  SizedBox(width: 10),
-                                  Column(
-                                    crossAxisAlignment:
-                                        CrossAxisAlignment.start,
-                                    children: [
-                                      RichText(
-                                        text: highlightText(
-                                          data["name"] ?? "",
-                                          _searchText,
-                                          baseStyle: TextStyle(
-                                            color: const Color.fromARGB(
-                                                255, 37, 37, 37),
-                                            fontSize: 16,
-                                            fontWeight: FontWeight.normal,
-                                          ),
-                                        ),
-                                      ),
-                                      RichText(
-                                        text: highlightText(
-                                          data["phone"] ?? "",
-                                          _searchText,
-                                          baseStyle: TextStyle(
-                                            color: Colors.grey,
-                                            fontSize: 14,
-                                            fontWeight: FontWeight.normal,
-                                          ),
-                                        ),
-                                      ),
-                                    ],
-                                  ),
-                                ],
                               ),
                             ),
-                          );
-                        },
-                      );
-                    },
+                            for (final data in talkieContacts)
+                              buildContactItem(
+                                data,
+                              )
+                          ],
+                        ),
+
+                      // 🟠 NON TALKIE CONTACTS (BOTTOM)
+                      if (nonTalkieContacts.isNotEmpty)
+                        Column(
+                          crossAxisAlignment: CrossAxisAlignment.start,
+                          children: [
+                            Container(
+                              width: double.infinity,
+                              color: Colors.white,
+                              child: Padding(
+                                padding: EdgeInsets.symmetric(
+                                    horizontal: 16, vertical: 10),
+                                child: Text(
+                                  "Invite to Talkie (${nonTalkieContacts.length} contacts)",
+                                  style: TextStyle(
+                                    fontSize: 14,
+                                    fontWeight: FontWeight.w500,
+                                    color: const Color.fromARGB(
+                                        255, 105, 104, 104),
+                                  ),
+                                ),
+                              ),
+                            ),
+                            for (final data in nonTalkieContacts)
+                              buildContactItem(data),
+                          ],
+                        ),
+                    ],
                   ),
           )
         ],
+      ),
+    );
+  }
+
+  Widget buildContactItem(Map<String, dynamic> data) {
+    final name = (data["name"] ?? "").toString();
+    final phone = (data["phone"] ?? "").toString();
+    final imagePath = (data["imagePath"] ?? "").toString();
+
+    print("Building: $name");
+
+    ImageProvider? imageProvider;
+    try {
+      if (imagePath.isNotEmpty) {
+        imageProvider = FileImage(File(imagePath));
+      }
+    } catch (e) {
+      imageProvider = null; // prevents crashes from bad file paths
+    }
+
+    String safeFirstLetter(String text) {
+      try {
+        if (text.trim().isEmpty) return "?";
+        return String.fromCharCode(text.runes.first);
+      } catch (e) {
+        return "?";
+      }
+    }
+
+    String safeText(String text) {
+      try {
+        return text;
+      } catch (e) {
+        return "";
+      }
+    }
+
+    return GestureDetector(
+      onTapDown: (_) {
+        setState(() {
+          hoveredContact = phone;
+        });
+      },
+      onTapCancel: () {
+        setState(() {
+          hoveredContact = null;
+        });
+      },
+      onTap: () async {
+        await Future.delayed(Duration(milliseconds: 250));
+        // Keep hover while action is happening
+        if ((data["isOnTalkie"] ?? 0) == 1) {
+          await Navigator.push(
+            context,
+            MaterialPageRoute(
+              builder: (context) => Message(
+                contactName: name,
+                contactUserId: data["userId"] ?? "",
+                contactImage: imagePath,
+              ),
+            ),
+          );
+        } else {
+          await showInviteOptions(data);
+        }
+
+        // Remove highlight only after action finishes
+        if (mounted) {
+          setState(() {
+            hoveredContact = null;
+          });
+        }
+      },
+      child: AnimatedContainer(
+        duration: const Duration(milliseconds: 200),
+        curve: Curves.easeOut,
+        margin: const EdgeInsets.symmetric(horizontal: 0, vertical: 0),
+        padding: const EdgeInsets.all(12),
+        decoration: BoxDecoration(
+          color: hoveredContact == phone
+              ? Colors.blue.withOpacity(0.08)
+              : Colors.white,
+          borderRadius: BorderRadius.circular(8),
+          boxShadow: hoveredContact == phone
+              ? [
+                  BoxShadow(
+                    color: Colors.blue.withOpacity(0.25),
+                    blurRadius: 10,
+                    spreadRadius: 1,
+                  )
+                ]
+              : [],
+        ),
+        child: Row(
+          children: [
+            CircleAvatar(
+              radius: 24,
+              backgroundColor: Colors.grey.shade200,
+              backgroundImage: imageProvider,
+              child: imageProvider == null
+                  ? Text(
+                      safeFirstLetter(name),
+                      style: const TextStyle(fontWeight: FontWeight.bold),
+                    )
+                  : null,
+            ),
+
+            const SizedBox(width: 10),
+
+            Expanded(
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  RichText(
+                    text: highlightText(
+                      safeText(name),
+                      _searchText,
+                      baseStyle: const TextStyle(
+                        fontSize: 16,
+                        color: Colors.black,
+                      ),
+                    ),
+                  ),
+                  const SizedBox(height: 2),
+                  Text(
+                    phone,
+                    style: const TextStyle(color: Colors.grey),
+                  ),
+                ],
+              ),
+            ),
+
+            // 👇 Only show Invite button for non-Talkie contacts
+            if ((data["isOnTalkie"] ?? 0) == 0)
+              GestureDetector(
+                onTap: () => showInviteOptions(data),
+                child: Container(
+                  padding: const EdgeInsets.symmetric(
+                    horizontal: 14,
+                    vertical: 6,
+                  ),
+                  decoration: BoxDecoration(
+                    color: const Color(0XFF2563EB).withOpacity(0.08),
+                    borderRadius: BorderRadius.circular(18),
+                  ),
+                  child: const Text(
+                    "Invite",
+                    style: TextStyle(
+                      fontSize: 14,
+                      color: Colors.green,
+                      fontWeight: FontWeight.w500,
+                    ),
+                  ),
+                ),
+              )
+          ],
+        ),
       ),
     );
   }

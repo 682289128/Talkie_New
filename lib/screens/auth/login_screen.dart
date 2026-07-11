@@ -7,6 +7,8 @@ import 'package:talkie_new/screens/chats/contact_permission_screen.dart';
 import 'package:talkie_new/screens/splash/splash_screen.dart';
 import 'package:talkie_new/services/user_service.dart';
 import 'package:talkie_new/services/contact_syn_service.dart';
+import 'package:talkie_new/services/initial_sync_service.dart';
+import 'package:talkie_new/services/device_sync_service.dart';
 
 //Email or Phone Page
 class Login extends StatefulWidget {
@@ -493,7 +495,30 @@ class _PasswordState extends State<Password> {
                                       data?['image'] ?? "",
                                     );
                                   }
-                                  syncService.syncContacts();
+                                  final deviceSync = DeviceSyncService();
+                                  final isFirstLogin =
+                                      await deviceSync.isFirstLoginOnDevice();
+
+                                  final contactSyncService =
+                                      ContactSyncService();
+                                  final initialSyncService =
+                                      InitialSyncService(user.uid);
+
+                                  if (isFirstLogin) {
+                                    print("🆕 FIRST LOGIN ON THIS DEVICE");
+
+                                    await initialSyncService.clearLocalData();
+                                    await initialSyncService.syncEverything();
+
+                                    await contactSyncService.syncContacts();
+
+                                    await deviceSync.markFirstSyncCompleted();
+                                  } else {
+                                    print("✅ DEVICE ALREADY INITIALIZED");
+
+                                    // Only update changes
+                                    await contactSyncService.syncContacts();
+                                  }
                                   Navigator.pushAndRemoveUntil(
                                     context,
                                     MaterialPageRoute(

@@ -5,7 +5,12 @@ import '../services/user_service.dart';
 import 'dart:async';
 
 class ContactSyncService {
-  final DBHelper db = DBHelper();
+  final String uid;
+  late final DBHelper db;
+
+  ContactSyncService() : uid = FirebaseAuth.instance.currentUser!.uid {
+    db = DBHelper(uid);
+  }
 
   Future<void> syncContacts() async {
     final user = FirebaseAuth.instance.currentUser;
@@ -19,11 +24,12 @@ class ContactSyncService {
 
     for (var doc in snapshot.docs) {
       final data = doc.data();
-      final contactUserId = data['userId'];
+      final contactUserId = data['userId']?.toString() ?? "";
 
       String localImagePath = "";
+      String imageUrl = "";
 
-      if (contactUserId != null && contactUserId.isNotEmpty) {
+      if (contactUserId.isNotEmpty) {
         final userDoc = await FirebaseFirestore.instance
             .collection("users")
             .doc(contactUserId)
@@ -32,26 +38,43 @@ class ContactSyncService {
         if (userDoc.exists) {
           final userData = userDoc.data();
 
-          final imageUrl = userData?['imageUrl'] ?? userData?['image'] ?? "";
+          imageUrl = userData?['imageUrl'] ?? userData?['image'] ?? "";
 
           print("IMAGE URL FOR $contactUserId => $imageUrl");
 
-          if (imageUrl.isNotEmpty) {
-            localImagePath = await UserService().cacheImage(imageUrl);
-            print("📸 cached: $localImagePath");
+          // Check local cache first
+          final localContact = await db.getContact(contactUserId);
+
+          if (localContact == null) {
+            // First time this contact exists locally
+            if (imageUrl.isNotEmpty) {
+              localImagePath = await UserService().cacheImage(imageUrl);
+            }
           } else {
-            print("⚠️ NO IMAGE FOUND FOR USER: $contactUserId");
+            // Contact already exists locally
+
+            if (localContact["imageUrl"] == imageUrl) {
+              // Image hasn't changed
+              localImagePath = localContact["imagePath"] ?? "";
+            } else {
+              // Image changed
+              if (imageUrl.isNotEmpty) {
+                localImagePath = await UserService().cacheImage(imageUrl);
+              }
+            }
           }
         }
       }
 
       // 🧠 UPSERT LOGIC (prevents duplicates)
       await db.insertOrUpdateContact({
-        'userId': contactUserId ?? "",
+        'userId': contactUserId,
         'name': data['name'] ?? "",
         'phone': data['phone'] ?? "",
         'email': data['email'] ?? "",
         'imagePath': localImagePath,
+        'imageUrl': imageUrl,
+        'isOnTalkie': 1,
       });
     }
 

@@ -3,9 +3,24 @@ import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:firebase_auth/firebase_auth.dart';
 import 'package:flutter_contacts/flutter_contacts.dart';
 import 'package:permission_handler/permission_handler.dart';
+import 'package:talkie_new/database/db_helper.dart';
+import 'package:talkie_new/screens/chats/message_screen.dart';
+import 'package:share_plus/share_plus.dart';
+import 'dart:io';
+import 'package:http/http.dart' as http;
+import 'package:path_provider/path_provider.dart';
+import 'package:path/path.dart' as p;
+//import 'package:url_launcher/url_launcher.dart';
 
 class AddContact extends StatefulWidget {
-  const AddContact({Key? key}) : super(key: key);
+  final String? phoneNumber;
+  final String? contactName;
+
+  const AddContact({
+    Key? key,
+    this.phoneNumber,
+    this.contactName,
+  }) : super(key: key);
 
   @override
   State<AddContact> createState() => _AddContactState();
@@ -14,6 +29,7 @@ class AddContact extends StatefulWidget {
 class _AddContactState extends State<AddContact> {
   bool? isOnTalkie; // null = no check yet
   String? matchedUserId;
+  String? profileImage = "";
   bool isChecking = false;
   bool isSaving = false;
   String? inviteLink = "https://talkie.app/invite"; // placeholder
@@ -42,6 +58,20 @@ class _AddContactState extends State<AddContact> {
   @override
   void initState() {
     super.initState();
+
+    if (widget.phoneNumber != null) {
+      _phoneController.text = widget.phoneNumber!;
+    }
+
+    // 🔥 NEW: use passed name directly
+    if (widget.contactName != null && widget.contactName!.isNotEmpty) {
+      final parts = widget.contactName!.trim().split(" ");
+
+      _firstNameController.text = parts.first;
+
+      _secondNameController.text =
+          parts.length > 1 ? parts.sublist(1).join(" ") : "";
+    }
 
     _phoneController.addListener(_checkIfUserExists);
   }
@@ -77,6 +107,10 @@ class _AddContactState extends State<AddContact> {
         if (dbPhone == normalizedPhone) {
           exists = true;
           foundUserId = doc.id;
+
+// Fetch profile image from Firestore
+          profileImage = (doc.data()["image"] ?? "").toString();
+
           break;
         }
       }
@@ -86,11 +120,38 @@ class _AddContactState extends State<AddContact> {
         matchedUserId = foundUserId;
         isChecking = false;
       });
+
+      // ❌ REMOVED FIREBASE NAME FETCH (as requested)
+      // ✅ We ONLY use passed widget.contactName now
     } catch (e) {
       setState(() {
         isChecking = false;
       });
     }
+  }
+
+  Future<String> downloadProfileImage(String imageUrl, String userId) async {
+    if (imageUrl.isEmpty) return "";
+
+    try {
+      final response = await http.get(Uri.parse(imageUrl));
+
+      if (response.statusCode == 200) {
+        final dir = await getApplicationDocumentsDirectory();
+
+        final imageFile = File(
+          p.join(dir.path, "contact_$userId.jpg"),
+        );
+
+        await imageFile.writeAsBytes(response.bodyBytes);
+
+        return imageFile.path;
+      }
+    } catch (e) {
+      print("Image download failed: $e");
+    }
+
+    return "";
   }
 
   @override
@@ -126,7 +187,7 @@ class _AddContactState extends State<AddContact> {
       if (exists) {
         final id = matchedUserId!;
 
-        // 3. SAVE DIRECTLY TO FIRESTORE CONTACTS
+        // 3. SAVE TO FIRESTORE
         await _saveTalkieContact(
           ownerId: user.uid,
           name: fullName,
@@ -134,6 +195,27 @@ class _AddContactState extends State<AddContact> {
           matchedUserId: id,
         );
       }
+
+      // ✅ 4. ADD THIS (LOCAL SQLITE SAVE)
+      final uid = FirebaseAuth.instance.currentUser!.uid;
+      final db = DBHelper(uid);
+
+      print("Saving image: $profileImage");
+      String localImagePath = "";
+
+      if (profileImage != null &&
+          profileImage!.isNotEmpty &&
+          matchedUserId != null) {
+        localImagePath =
+            await downloadProfileImage(profileImage!, matchedUserId!);
+      }
+
+      await db.insertContact({
+        "name": fullName,
+        "phone": fullPhone,
+        "userId": matchedUserId ?? "",
+        "imagePath": localImagePath,
+      });
     } catch (e) {
       print("Error saving contact: $e");
     }
@@ -159,16 +241,13 @@ class _AddContactState extends State<AddContact> {
   }
 
   void _inviteUser() {
-    final phone = _phoneController.text.trim();
-    final fullPhone = "$_selectedCountryCode$phone";
-    final normalizedPhone = normalizePhone(fullPhone);
-
     final message =
-        "Hey 👋 I'm inviting you to join Talkie! Download here: $inviteLink";
+        "Hey 👋 I'm inviting you to join Talkie!\n\nDownload it here: $inviteLink";
 
-    // You can later replace with real sharing logic
-    print("Send invite to: $fullPhone");
-    print("Message: $message");
+    Share.share(
+      message,
+      subject: "Join Talkie",
+    );
   }
 
   Future<void> _saveToDeviceContacts(String name, String phone) async {
@@ -477,39 +556,214 @@ class _AddContactState extends State<AddContact> {
                             if (isOnTalkie == true) {
                               ScaffoldMessenger.of(context).showSnackBar(
                                 SnackBar(
-                                  content: Text(
-                                    "Contact Saved",
-                                    style: TextStyle(fontSize: 18),
+                                  behavior: SnackBarBehavior.floating,
+                                  dismissDirection: DismissDirection.none,
+                                  elevation: 0,
+                                  backgroundColor: Colors.transparent,
+                                  duration: Duration(days: 1),
+                                  content: Container(
+                                    padding: EdgeInsets.all(14),
+                                    decoration: BoxDecoration(
+                                      gradient: LinearGradient(
+                                        colors: [
+                                          Color(0xFF2563EB),
+                                          Color(0xFF9333EA),
+                                        ],
+                                        begin: Alignment.topLeft,
+                                        end: Alignment.bottomRight,
+                                      ),
+                                      borderRadius: BorderRadius.circular(14),
+                                      boxShadow: [
+                                        BoxShadow(
+                                          color: Colors.black26,
+                                          blurRadius: 10,
+                                          offset: Offset(0, 4),
+                                        )
+                                      ],
+                                    ),
+                                    child: Row(
+                                      children: [
+                                        Container(
+                                          padding: EdgeInsets.all(8),
+                                          decoration: BoxDecoration(
+                                            color:
+                                                Colors.white.withOpacity(0.15),
+                                            borderRadius:
+                                                BorderRadius.circular(10),
+                                          ),
+                                          child: Icon(
+                                            Icons.check_circle,
+                                            color: Colors.white,
+                                            size: 20,
+                                          ),
+                                        ),
+                                        SizedBox(width: 12),
+                                        Expanded(
+                                          child: Column(
+                                            mainAxisSize: MainAxisSize.min,
+                                            crossAxisAlignment:
+                                                CrossAxisAlignment.start,
+                                            children: [
+                                              Text(
+                                                "Contact Saved",
+                                                style: TextStyle(
+                                                  color: Colors.white,
+                                                  fontSize: 15,
+                                                  fontWeight: FontWeight.bold,
+                                                ),
+                                              ),
+                                              SizedBox(height: 2),
+                                              Text(
+                                                "This user is on Talkie",
+                                                style: TextStyle(
+                                                  color: Colors.white70,
+                                                  fontSize: 12,
+                                                ),
+                                              ),
+                                            ],
+                                          ),
+                                        ),
+                                        GestureDetector(
+                                          onTap: () {
+                                            ScaffoldMessenger.of(context)
+                                                .hideCurrentSnackBar(); // 🔥 dismiss snack
+
+                                            Future.microtask(() {
+                                              Navigator.pushAndRemoveUntil(
+                                                context,
+                                                MaterialPageRoute(
+                                                  builder: (context) => Message(
+                                                    contactName:
+                                                        "${_firstNameController.text.trim()} ${_secondNameController.text.trim()}",
+                                                    contactUserId:
+                                                        matchedUserId ?? "",
+                                                    contactImage: "",
+                                                  ),
+                                                ),
+                                                (route) => route.isFirst,
+                                              );
+                                            });
+                                          },
+                                          child: Container(
+                                            padding: EdgeInsets.symmetric(
+                                                horizontal: 12, vertical: 8),
+                                            decoration: BoxDecoration(
+                                              color: Colors.white,
+                                              borderRadius:
+                                                  BorderRadius.circular(10),
+                                            ),
+                                            child: Text(
+                                              "Chat",
+                                              style: TextStyle(
+                                                color: Color(0xFF2563EB),
+                                                fontWeight: FontWeight.bold,
+                                                fontSize: 13,
+                                              ),
+                                            ),
+                                          ),
+                                        ),
+                                      ],
+                                    ),
                                   ),
-                                  action: SnackBarAction(
-                                    label: "  Start Chatting  ",
-                                    textColor: Colors.yellow.withOpacity(0.9),
-                                    onPressed: () {
-                                      Navigator.pop(context);
-                                    },
-                                  ),
-                                  backgroundColor:
-                                      Color.fromARGB(255, 51, 137, 223),
-                                  duration: Duration(seconds: 3),
                                 ),
                               );
                             } else {
                               ScaffoldMessenger.of(context).showSnackBar(
                                 SnackBar(
-                                  content: Text(
-                                    "Contact Saved (not on Talkie)",
-                                    style: TextStyle(fontSize: 12),
+                                  behavior: SnackBarBehavior.floating,
+                                  elevation: 0,
+                                  backgroundColor: Colors.transparent,
+                                  duration: Duration(
+                                      days: 1), // stays until user taps action
+                                  content: Container(
+                                    padding: EdgeInsets.all(14),
+                                    decoration: BoxDecoration(
+                                      gradient: LinearGradient(
+                                        colors: [
+                                          Color(0xFF2563EB),
+                                          Color(0xFF9333EA),
+                                        ],
+                                        begin: Alignment.topLeft,
+                                        end: Alignment.bottomRight,
+                                      ),
+                                      borderRadius: BorderRadius.circular(14),
+                                      boxShadow: [
+                                        BoxShadow(
+                                          color: Colors.black26,
+                                          blurRadius: 10,
+                                          offset: Offset(0, 4),
+                                        )
+                                      ],
+                                    ),
+                                    child: Row(
+                                      children: [
+                                        Container(
+                                          padding: EdgeInsets.all(8),
+                                          decoration: BoxDecoration(
+                                            color:
+                                                Colors.white.withOpacity(0.15),
+                                            borderRadius:
+                                                BorderRadius.circular(10),
+                                          ),
+                                          child: Icon(
+                                            Icons.person_off,
+                                            color: Colors.white,
+                                            size: 20,
+                                          ),
+                                        ),
+                                        SizedBox(width: 12),
+                                        Expanded(
+                                          child: Column(
+                                            mainAxisSize: MainAxisSize.min,
+                                            crossAxisAlignment:
+                                                CrossAxisAlignment.start,
+                                            children: [
+                                              Text(
+                                                "Contact Saved",
+                                                style: TextStyle(
+                                                  color: Colors.white,
+                                                  fontSize: 15,
+                                                  fontWeight: FontWeight.bold,
+                                                ),
+                                              ),
+                                              SizedBox(height: 2),
+                                              Text(
+                                                "This user is not on Talkie",
+                                                style: TextStyle(
+                                                  color: Colors.white70,
+                                                  fontSize: 12,
+                                                ),
+                                              ),
+                                            ],
+                                          ),
+                                        ),
+                                        GestureDetector(
+                                          onTap: () {
+                                            ScaffoldMessenger.of(context)
+                                                .hideCurrentSnackBar(); // 👈 important
+                                            _inviteUser();
+                                          },
+                                          child: Container(
+                                            padding: EdgeInsets.symmetric(
+                                                horizontal: 12, vertical: 8),
+                                            decoration: BoxDecoration(
+                                              color: Colors.white,
+                                              borderRadius:
+                                                  BorderRadius.circular(10),
+                                            ),
+                                            child: Text(
+                                              "Invite",
+                                              style: TextStyle(
+                                                color: Color(0xFF2563EB),
+                                                fontWeight: FontWeight.bold,
+                                                fontSize: 13,
+                                              ),
+                                            ),
+                                          ),
+                                        ),
+                                      ],
+                                    ),
                                   ),
-                                  action: SnackBarAction(
-                                    label: "  Invite  ",
-                                    textColor: Colors.yellow.withOpacity(0.9),
-                                    onPressed: () {
-                                      _inviteUser();
-                                    },
-                                  ),
-                                  backgroundColor:
-                                      Color.fromARGB(255, 51, 137, 223),
-                                  duration: Duration(seconds: 3),
                                 ),
                               );
                             }

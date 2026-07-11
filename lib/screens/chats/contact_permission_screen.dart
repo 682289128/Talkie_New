@@ -4,6 +4,9 @@ import 'package:flutter_contacts/flutter_contacts.dart';
 import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:talkie_new/screens/chats/chat_screen.dart';
 import 'package:firebase_auth/firebase_auth.dart';
+import 'package:talkie_new/services/contact_syn_service.dart';
+import 'package:talkie_new/database/db_helper.dart';
+import 'package:sqflite/sqflite.dart';
 
 class ContactPermissionScreen extends StatefulWidget {
   final bool fromLogin;
@@ -16,7 +19,11 @@ class ContactPermissionScreen extends StatefulWidget {
 
 class _ContactPermissionScreenState extends State<ContactPermissionScreen> {
   bool _isLoading = false;
-  double _progress = 0;
+  bool _isChecking = false;
+  int _totalContacts = 0;
+  int _processedContacts = 0;
+
+  String _syncStatus = "Reading contacts...";
   @override
   void initState() {
     super.initState();
@@ -52,6 +59,11 @@ class _ContactPermissionScreenState extends State<ContactPermissionScreen> {
       // ✅ permission granted → sync immediately
       List<Contact> contacts =
           await FlutterContacts.getContacts(withProperties: true);
+      await saveContactsWithTalkieFlag(contacts);
+      setState(() {
+        _totalContacts = contacts.length;
+        _processedContacts = 0;
+      });
 
       List<String> phoneNumbers = [];
 
@@ -59,10 +71,20 @@ class _ContactPermissionScreenState extends State<ContactPermissionScreen> {
         for (var phone in contact.phones) {
           phoneNumbers.add(normalizePhone(phone.number));
         }
+
+        if (mounted) {
+          setState(() {
+            _processedContacts++;
+          });
+        }
       }
+      setState(() {
+        _isChecking = true;
+        _syncStatus = "Checking contacts...";
+        _processedContacts = 0;
+      });
 
       await matchContacts(phoneNumbers, context);
-      return;
     }
 
     // 🔵 REGISTRATION FLOW (KEEP YOUR UI)
@@ -92,6 +114,12 @@ class _ContactPermissionScreenState extends State<ContactPermissionScreen> {
     // NOW SAFE TO READ CONTACTS
     List<Contact> contacts =
         await FlutterContacts.getContacts(withProperties: true);
+    await saveContactsWithTalkieFlag(contacts);
+
+    setState(() {
+      _totalContacts = contacts.length;
+      _processedContacts = 0;
+    });
 
     List<String> phoneNumbers = [];
 
@@ -99,6 +127,15 @@ class _ContactPermissionScreenState extends State<ContactPermissionScreen> {
       for (var phone in contact.phones) {
         phoneNumbers.add(normalizePhone(phone.number));
       }
+
+      if (mounted) {
+        setState(() {
+          _processedContacts++;
+        });
+      }
+
+      // Makes the animation visible
+      await Future.delayed(const Duration(milliseconds: 8));
     }
 
     await matchContacts(phoneNumbers, context);
@@ -130,6 +167,13 @@ class _ContactPermissionScreenState extends State<ContactPermissionScreen> {
     final usersRef = FirebaseFirestore.instance.collection('users');
     final snapshot = await usersRef.get();
 
+    if (mounted) {
+      setState(() {
+        _syncStatus = "Checking contacts...";
+        _processedContacts = 0;
+      });
+    }
+
     List matchedUsers = [];
     List<QueryDocumentSnapshot> matchedDocs = [];
 
@@ -144,6 +188,14 @@ class _ContactPermissionScreenState extends State<ContactPermissionScreen> {
         matchedUsers.add(userData);
         matchedDocs.add(doc);
       }
+
+      if (mounted) {
+        setState(() {
+          _processedContacts++;
+        });
+      }
+
+      await Future.delayed(const Duration(milliseconds: 3));
     }
     print("CONTACTS: $numbers");
     print("MATCHED USERS: $matchedUsers");
@@ -155,6 +207,52 @@ class _ContactPermissionScreenState extends State<ContactPermissionScreen> {
     // 🔥 NEW: SAVE RELATIONSHIPS IN FIRESTORE
     try {
       await saveMatchedContactsToFirestore(matchedDocs);
+      final user = FirebaseAuth.instance.currentUser;
+      if (user != null) {
+        final db = await DBHelper(user.uid).database;
+
+        for (var doc in matchedDocs) {
+          final data = doc.data() as Map<String, dynamic>;
+
+          // 🔥 UPDATE EXISTING CONTACT INSTEAD OF ONLY INSERT
+          await db.update(
+            "contacts",
+            {
+              "userId": doc.id,
+              "name": data["name"] ?? "",
+              "phone": data["phone"] ?? "",
+              "imagePath": null,
+              "isOnTalkie": 1,
+            },
+            where: "phone = ?",
+            whereArgs: [normalizePhone(data["phone"] ?? "")],
+          );
+          final updated = await db.update(
+            "contacts",
+            {
+              "userId": doc.id,
+              "isOnTalkie": 1,
+            },
+            where: "phone=?",
+            whereArgs: [normalizePhone(data["phone"] ?? "")],
+          );
+
+          print(
+              "Updated ${normalizePhone(data["phone"] ?? "")} -> $updated row(s)");
+        }
+      }
+      if (mounted) {
+        setState(() {
+          _syncStatus = "Saving contacts...";
+        });
+      }
+      // 🔥 Refresh SQLite with the newly uploaded Talkie contacts
+      await ContactSyncService().syncContacts();
+      if (mounted) {
+        setState(() {
+          _syncStatus = "Finishing...";
+        });
+      }
     } catch (e) {
       print("❌ ERROR CALLING SAVE FUNCTION: $e");
     }
@@ -167,6 +265,32 @@ class _ContactPermissionScreenState extends State<ContactPermissionScreen> {
         builder: (context) => Chat(),
       ),
     );
+  }
+
+  Future<void> saveContactsWithTalkieFlag(List<Contact> contacts) async {
+    final user = FirebaseAuth.instance.currentUser;
+    if (user == null) return;
+
+    final db = await DBHelper(user.uid).database;
+
+    for (var contact in contacts) {
+      final phone = contact.phones.isNotEmpty
+          ? normalizePhone(contact.phones.first.number)
+          : "";
+
+      await db.insert(
+        "contacts",
+        {
+          "name": contact.displayName,
+          "phone": phone,
+          "imagePath": null,
+          "isOnTalkie": 0, // default NOT on Talkie
+        },
+        conflictAlgorithm: ConflictAlgorithm.ignore,
+      );
+    }
+
+    print("📦 All contacts saved with isOnTalkie = 0");
   }
 
   void skip(BuildContext context) {
@@ -278,24 +402,9 @@ class _ContactPermissionScreenState extends State<ContactPermissionScreen> {
                       onPressed: () async {
                         setState(() {
                           _isLoading = true;
-                          _progress = 0;
                         });
-
-                        for (int i = 0; i <= 90; i += 10) {
-                          await Future.delayed(Duration(milliseconds: 100));
-                          if (!mounted) return;
-                          setState(() {
-                            _progress = i.toDouble();
-                          });
-                        }
 
                         await requestPermission(context);
-
-                        if (!mounted) return;
-
-                        setState(() {
-                          _progress = 100;
-                        });
                       },
                       style: ElevatedButton.styleFrom(
                         backgroundColor: const Color(0xFF2563EB),
@@ -329,34 +438,39 @@ class _ContactPermissionScreenState extends State<ContactPermissionScreen> {
                   mainAxisSize: MainAxisSize.min,
                   children: [
                     SizedBox(
-                      height: 80,
-                      width: 80,
-                      child: Stack(
-                        alignment: Alignment.center,
-                        children: [
-                          CircularProgressIndicator(
-                            value: _progress / 100,
-                            strokeWidth: 6,
-                            color: Color(0xFF2563EB),
-                          ),
-                          Text(
-                            "${_progress.toInt()}%",
-                            style: TextStyle(
-                              fontSize: 18,
-                              fontWeight: FontWeight.bold,
-                              color: Color(0xFF2563EB),
-                            ),
-                          ),
-                        ],
+                      width: 300,
+                      child: LinearProgressIndicator(
+                        value: _totalContacts == 0
+                            ? null
+                            : _processedContacts / _totalContacts,
+                        minHeight: 10,
+                        borderRadius: BorderRadius.circular(30),
+                        color: const Color(0xFF2563EB),
+                        backgroundColor: Colors.grey.shade300,
                       ),
                     ),
                     SizedBox(height: 20),
-                    Text(
-                      "Syncing contacts...",
-                      style: TextStyle(
-                        fontSize: 16,
-                        color: Colors.black87,
-                      ),
+                    Column(
+                      children: [
+                        Text(
+                          _syncStatus,
+                          style: const TextStyle(
+                            fontSize: 17,
+                            fontWeight: FontWeight.bold,
+                          ),
+                        ),
+                        const SizedBox(height: 8),
+                        if (!_isChecking)
+                          Text(
+                            "$_processedContacts / $_totalContacts",
+                            style: const TextStyle(color: Colors.grey),
+                          ),
+                        if (_isChecking)
+                          Text(
+                            "Checking contacts...",
+                            style: const TextStyle(color: Colors.grey),
+                          ),
+                      ],
                     ),
                   ],
                 ),

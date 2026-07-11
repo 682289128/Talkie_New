@@ -1,12 +1,21 @@
 import 'dart:io';
 import 'package:http/http.dart' as http;
 import 'package:path_provider/path_provider.dart';
-import 'package:path/path.dart';
 import '../database/db_helper.dart';
 import 'package:cloud_firestore/cloud_firestore.dart';
+import 'package:firebase_auth/firebase_auth.dart';
 
 class UserService {
-  final DBHelper dbHelper = DBHelper();
+  late final String uid;
+  late final DBHelper dbHelper;
+
+  UserService() {
+    final user = FirebaseAuth.instance.currentUser;
+    if (user == null) return;
+
+    uid = user.uid;
+    dbHelper = DBHelper(uid);
+  }
 
   // 📸 Download + cache image locally
   Future<String> cacheImage(String url) async {

@@ -4,7 +4,10 @@ import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:intl/intl.dart';
 
 class DBHelper {
-  static Database? _database;
+  final String userId;
+
+  DBHelper(this.userId);
+  Database? _database;
 
   // GET DATABASE
   Future<Database> get database async {
@@ -15,7 +18,7 @@ class DBHelper {
 
   // INIT DATABASE
   Future<Database> initDB() async {
-    String path = join(await getDatabasesPath(), 'talkie.db');
+    String path = join(await getDatabasesPath(), 'talkie_$userId.db');
 
     return await openDatabase(
       path,
@@ -35,10 +38,23 @@ CREATE TABLE contacts (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
   userId TEXT UNIQUE,
   name TEXT,
-  phone TEXT,
+  phone TEXT UNIQUE,
   email TEXT,
   imagePath TEXT,
-  imageUrl TEXT
+  imageUrl TEXT,
+  isOnTalkie INTEGER DEFAULT 0
+)
+''');
+
+        await db.execute('''
+CREATE TABLE IF NOT EXISTS chats (
+  id TEXT PRIMARY KEY,
+  user1 TEXT,
+  user2 TEXT,
+  lastMessage TEXT,
+  lastMessageTime INTEGER,
+  status TEXT,
+  lastSenderId TEXT
 )
 ''');
         print("✅ Database and table created!");
@@ -90,6 +106,44 @@ CREATE TABLE messages (
       'contacts',
       where: 'userId = ?',
       whereArgs: [userId],
+      limit: 1,
+    );
+
+    if (result.isNotEmpty) {
+      return result.first;
+    }
+
+    return null;
+  }
+
+  Future<Map<String, dynamic>?> getContact(String userId) async {
+    final dbClient = await database;
+
+    final result = await dbClient.query(
+      'contacts',
+      where: 'userId = ?',
+      whereArgs: [userId],
+      limit: 1,
+    );
+
+    if (result.isNotEmpty) {
+      return result.first;
+    }
+
+    return null;
+  }
+
+  Future<Map<String, dynamic>?> getChatContact(String userId) async {
+    return await getContactByUserId(userId);
+  }
+
+  Future<Map<String, dynamic>?> getContactByPhone(String phone) async {
+    final dbClient = await database;
+
+    final result = await dbClient.query(
+      "contacts",
+      where: "phone = ?",
+      whereArgs: [phone],
       limit: 1,
     );
 
@@ -173,6 +227,42 @@ CREATE TABLE messages (
     );
   }
 
+  Future<bool> messageExists(String id) async {
+    final db = await database;
+
+    final result = await db.query(
+      'messages',
+      where: 'id = ?',
+      whereArgs: [id],
+    );
+
+    return result.isNotEmpty;
+  }
+
+  //Chat Insert Method
+
+  Future<void> insertOrUpdateChat(Map<String, dynamic> chat) async {
+    final db = await database;
+
+    await db.insert(
+      'chats',
+      chat,
+      conflictAlgorithm: ConflictAlgorithm.replace,
+    );
+  }
+
+  //chat Fetch Method
+  Future<List<Map<String, dynamic>>> getChats(String userId) async {
+    final db = await database;
+
+    return await db.query(
+      'chats',
+      where: 'user1 = ? OR user2 = ?',
+      whereArgs: [userId, userId],
+      orderBy: 'lastMessageTime DESC',
+    );
+  }
+
   //get chat messages functions
   Future<List<Map<String, dynamic>>> getMessages(
       String userId, String contactId) async {
@@ -245,7 +335,18 @@ CREATE TABLE messages (
   ) {
     return FirebaseFirestore.instance
         .collection("messages")
-        .where("senderId", isEqualTo: userId)
+        .where(
+          Filter.or(
+            Filter.and(
+              Filter("senderId", isEqualTo: userId),
+              Filter("receiverId", isEqualTo: contactId),
+            ),
+            Filter.and(
+              Filter("senderId", isEqualTo: contactId),
+              Filter("receiverId", isEqualTo: userId),
+            ),
+          ),
+        )
         .snapshots()
         .map((snapshot) {
       return snapshot.docs.map((doc) {
@@ -317,5 +418,30 @@ CREATE TABLE messages (
       where: "id = ?",
       whereArgs: [messageId],
     );
+  }
+
+  Future<int> deleteLocalMessage(String messageId) async {
+    final db = await database;
+
+    return await db.delete(
+      'messages',
+      where: 'id = ?',
+      whereArgs: [messageId],
+    );
+  }
+
+  Future<void> printMessage(String messageId) async {
+    final db = await database;
+
+    final msg =
+        await db.query('messages', where: 'id=?', whereArgs: [messageId]);
+
+    print("");
+    print("===== SQLITE MESSAGE =====");
+
+    print(msg);
+
+    print("==========================");
+    print("");
   }
 }

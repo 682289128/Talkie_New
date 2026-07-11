@@ -1,9 +1,11 @@
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import '../../services/auth_service.dart';
+import 'package:firebase_auth/firebase_auth.dart';
 import 'package:talkie_new/screens/auth/login_screen.dart';
-import 'package:talkie_new/screens/chats/contact_permission_screen.dart';
+import 'package:talkie_new/screens/chats/contacts.dart';
 import '../../database/db_helper.dart';
+import 'package:talkie_new/screens/chats/contacts_welcome_screen.dart';
 
 //FullName
 class FullName extends StatefulWidget {
@@ -117,12 +119,6 @@ class _FullNameState extends State<FullName> {
                             color: Color.fromARGB(255, 122, 122, 122),
                           ),
                         ),
-                        /* focusedBorder: OutlineInputBorder(
-                        borderSide: BorderSide(
-                          color: Color(0xFF2563EB),
-                          width: 2,
-                        ),
-                      ),*/
                         floatingLabelStyle: TextStyle(color: Color(0xFF2563EB)),
                         prefixIcon: Icon(Icons.person),
                         labelText: "Enter Full name",
@@ -681,13 +677,12 @@ class Password extends StatefulWidget {
 }
 
 class _Password_State extends State<Password> {
-  final dbHelper = DBHelper();
   final AuthService _authService = AuthService();
   final _formKey = GlobalKey<FormState>();
   bool _isLoading = false;
   final TextEditingController password = TextEditingController();
 
-  bool _obscureText = true; // initially hide password
+  bool _obscureText = true;
 
   @override
   void dispose() {
@@ -844,6 +839,9 @@ class _Password_State extends State<Password> {
                                     password: password.text.trim(),
                                     phone: widget.phone,
                                   );
+                                  final uid =
+                                      FirebaseAuth.instance.currentUser!.uid;
+                                  final dbHelper = DBHelper(uid);
 
                                   //Add this line
                                   await dbHelper.insertUser({
@@ -981,8 +979,7 @@ class _Successful_State extends State<Successful> {
                                 Navigator.pushAndRemoveUntil(
                                   context,
                                   MaterialPageRoute(
-                                    builder: (context) =>
-                                        ContactPermissionScreen(),
+                                    builder: (context) => const ContactsWelcomeScreen(),
                                   ),
                                   (route) => false,
                                 );

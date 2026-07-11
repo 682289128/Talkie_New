@@ -11,7 +11,6 @@ class Splash extends StatefulWidget {
 }
 
 class _SplashState extends State<Splash> {
-
   @override
   void initState() {
     super.initState();
@@ -19,9 +18,9 @@ class _SplashState extends State<Splash> {
   }
 
   void checkUser() async {
-    await Future.delayed(const Duration(seconds: 2));
-
-    User? user = FirebaseAuth.instance.currentUser;
+    await Future.delayed(const Duration(seconds: 0));
+    if (!mounted) return;
+    final user = FirebaseAuth.instance.currentUser;
 
     if (user != null) {
       // ✅ Already logged in

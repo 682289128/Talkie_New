@@ -4,9 +4,18 @@ import 'package:firebase_auth/firebase_auth.dart';
 import 'package:talkie_new/services/chat_service.dart';
 import 'package:talkie_new/widgets/message_bubble.dart';
 import 'package:flutter/services.dart';
+import 'dart:async';
 import 'dart:io';
 import 'package:scrollable_positioned_list/scrollable_positioned_list.dart';
 import 'package:talkie_new/database/db_helper.dart';
+import 'package:talkie_new/widgets/unknown_contact_card.dart';
+import 'package:talkie_new/screens/chats/addContact_screen.dart';
+import 'package:talkie_new/widgets/attachment_menu.dart';
+import 'package:talkie_new/screens/attachments/gallery.dart';
+import 'package:talkie_new/screens/attachments/camera.dart';
+import 'package:talkie_new/screens/attachments/contact_share.dart';
+import 'package:talkie_new/screens/attachments/file.dart';
+import 'package:talkie_new/screens/attachments/location.dart';
 
 class Message extends StatefulWidget {
   final String contactName;
@@ -25,7 +34,6 @@ class Message extends StatefulWidget {
 }
 
 class _MessageState extends State<Message> with WidgetsBindingObserver {
-  final DBHelper _dbHelper = DBHelper();
   bool isNavigatingToReply = false;
   bool shouldAutoScroll = true;
   bool hasInitiallyScrolled = false;
@@ -40,9 +48,11 @@ class _MessageState extends State<Message> with WidgetsBindingObserver {
   double verticalThreshold = 18;
   String? highlightedMessageId;
   String? deletedHighlightedId;
-  final ChatService _chatService = ChatService();
+  bool _checkedContact = false;
+
   final TextEditingController _controller = TextEditingController();
   final ItemScrollController _itemScrollController = ItemScrollController();
+  bool showExpandInput = false;
 
   final ItemPositionsListener _itemPositionsListener =
       ItemPositionsListener.create();
@@ -52,6 +62,7 @@ class _MessageState extends State<Message> with WidgetsBindingObserver {
   List<Map<String, dynamic>> localMessages = [];
   bool isLocalLoaded = false;
 
+  bool isDeletingMessages = false;
   Map<String, String> userNames = {};
 
   Map<String, dynamic>?
@@ -66,10 +77,66 @@ class _MessageState extends State<Message> with WidgetsBindingObserver {
   bool reverseChat = true;
   // 🟦 MULTI SELECT MODE
   bool isSelectionMode = false;
+  String? unknownPhone;
+  String? unknownName;
+  bool showUnknownCard = false;
+  bool showUnknownContactCard = true;
 
 // selected message IDs (ORDER matters for numbering)
   List<String> selectedMessages = [];
   bool dragSelectionEnabled = false;
+
+  Future<void> checkUnknownContact(String userId) async {
+    final db = await _dbHelper.database;
+
+    final contactResult = await db.query(
+      "contacts",
+      where: "userId = ?",
+      whereArgs: [userId],
+    );
+
+    String phone = "";
+    String fullName = "";
+
+    // 1️⃣ CHECK LOCAL CONTACT FIRST
+    if (contactResult.isNotEmpty) {
+      phone = contactResult.first["phone"]?.toString() ?? "";
+      fullName = contactResult.first["name"]?.toString() ?? "";
+    }
+
+    // 2️⃣ IF NOT FOUND → FETCH FIREBASE USER
+    if (phone.isEmpty || fullName.isEmpty) {
+      try {
+        final doc = await FirebaseFirestore.instance
+            .collection("users")
+            .doc(userId)
+            .get();
+
+        if (doc.exists) {
+          final data = doc.data();
+
+          phone = phone.isEmpty ? (data?["phone"]?.toString() ?? "") : phone;
+
+          fullName = fullName.isEmpty
+              ? (data?["fullName"] ?? data?["name"] ?? "Unknown User")
+              : fullName;
+        }
+      } catch (e) {
+        print("Firebase fetch error: $e");
+      }
+    }
+
+    // 3️⃣ FINAL FALLBACK
+    if (phone.isEmpty) phone = "Unknown number";
+    if (fullName.isEmpty) fullName = "Unknown Contact";
+
+    setState(() {
+      showUnknownCard = contactResult.isEmpty;
+      unknownPhone = phone;
+      unknownName = fullName;
+    });
+  }
+
   Future<void> sendMessage() async {
     if (_controller.text.trim().isEmpty) return;
     final tempId = DateTime.now().millisecondsSinceEpoch.toString();
@@ -140,7 +207,9 @@ class _MessageState extends State<Message> with WidgetsBindingObserver {
 // 💥 RELOAD UI
     await _loadLocalMessages();
 
-    if (mounted) setState(() {});
+    if (!mounted) return;
+
+    setState(() {});
 
     _controller.clear();
 
@@ -622,11 +691,11 @@ class _MessageState extends State<Message> with WidgetsBindingObserver {
                 : isFocused
                     ? Colors.blue.withOpacity(0.20)
                     : Colors.transparent,
-        borderRadius: BorderRadius.circular(10),
+        borderRadius: BorderRadius.circular(0),
         border: isSelected
-            ? Border.all(color: Colors.blueAccent, width: 1.5)
+            ? Border.all(color: Colors.blueAccent, width: 0)
             : isEditing
-                ? Border.all(color: Colors.blueAccent, width: 1)
+                ? Border.all(color: Colors.blueAccent, width: 0)
                 : null,
         boxShadow: isSelected
             ? [
@@ -665,8 +734,8 @@ class _MessageState extends State<Message> with WidgetsBindingObserver {
                   "${selectedIndex + 1}",
                   style: const TextStyle(
                     color: Colors.white,
-                    fontSize: 14,
-                    fontWeight: FontWeight.normal,
+                    fontSize: 12,
+                    fontWeight: FontWeight.bold,
                   ),
                 ),
               ),
@@ -701,9 +770,10 @@ class _MessageState extends State<Message> with WidgetsBindingObserver {
       // 🔥 always ensure a clean reset cycle
       focus.unfocus();
 
-      Future.delayed(const Duration(milliseconds: 30), () {
+      WidgetsBinding.instance.addPostFrameCallback((_) {
         if (!mounted) return;
-        focus.requestFocus(_textFocusNode);
+
+        _textFocusNode.requestFocus();
       });
     });
   }
@@ -739,9 +809,22 @@ class _MessageState extends State<Message> with WidgetsBindingObserver {
     return snapshot.docs;
   }
 
+  late DBHelper _dbHelper;
+  late final ChatService _chatService;
+
+  late StreamSubscription _messageSub;
+  bool _isFirstSnapshot = true;
+
   @override
   void initState() {
     super.initState();
+
+    checkUnknownContact(widget.contactUserId);
+
+    final uid = FirebaseAuth.instance.currentUser!.uid;
+
+    _dbHelper = DBHelper(uid);
+    _chatService = ChatService(uid);
 
     WidgetsBinding.instance.addPostFrameCallback((_) {
       _textFocusNode.unfocus();
@@ -751,6 +834,8 @@ class _MessageState extends State<Message> with WidgetsBindingObserver {
     _setOnlineStatus(true);
 
     _loadLocalMessages();
+
+    _listenForIncomingMessages();
 
     _loadUserNames();
 
@@ -776,6 +861,99 @@ class _MessageState extends State<Message> with WidgetsBindingObserver {
         senderId: widget.contactUserId,
         receiverId: currentUser.uid,
       );
+    });
+  }
+
+  void _listenForIncomingMessages() {
+    final uid = FirebaseAuth.instance.currentUser!.uid;
+
+    final chatId = _chatService.getChatId(
+      uid,
+      widget.contactUserId,
+    );
+
+    _messageSub = FirebaseFirestore.instance
+        .collection("chats")
+        .doc(chatId)
+        .collection("messages")
+        .snapshots()
+        .listen((snapshot) async {
+      for (var change in snapshot.docChanges) {
+        final data = change.doc.data();
+
+        if (data == null) continue;
+
+        final messageId = data["id"];
+
+        final hiddenFor = List<String>.from(data["hiddenFor"] ?? []);
+
+        if (hiddenFor.contains(uid)) {
+          continue;
+        }
+
+        //////////////////////////////////////
+        // NEW MESSAGE
+        //////////////////////////////////////
+
+        if (change.type == DocumentChangeType.added) {
+          await _dbHelper.insertMessage({
+            "id": messageId,
+            "senderId": data["senderId"],
+            "receiverId": data["receiverId"],
+            "text": data["text"],
+            "replyTo": data["replyTo"],
+            "replyToId": data["replyToId"],
+            "status": data["status"] ?? "sent",
+            "createdAt": (data["createdAt"] is Timestamp)
+                ? (data["createdAt"] as Timestamp).millisecondsSinceEpoch
+                : DateTime.now().millisecondsSinceEpoch,
+            "localTime": data["localTime"] ?? "",
+            "isDeleted": data["isDeleted"] == 1 ? 1 : 0,
+            "edited": data["edited"] == 1 ? 1 : 0,
+          });
+        }
+
+        //////////////////////////////////////
+        // EDITED MESSAGE
+        //////////////////////////////////////
+
+        else if (change.type == DocumentChangeType.modified) {
+          final newText = data["text"] ?? "";
+
+          final localMessages = await _dbHelper.getMessages(
+            uid,
+            widget.contactUserId,
+          );
+
+          final existing = localMessages.firstWhere(
+            (m) => m["id"] == messageId,
+            orElse: () => {},
+          );
+
+          if (existing.isNotEmpty) {
+            if (existing["text"] != newText) {
+              await _dbHelper.updateMessage(
+                messageId,
+                newText,
+              );
+            }
+          }
+        }
+
+        //////////////////////////////////////
+        // REMOVED
+        //////////////////////////////////////
+
+        else if (change.type == DocumentChangeType.removed) {
+          await _dbHelper.deleteMessageForever(messageId);
+        }
+      }
+
+      await _loadLocalMessages();
+
+      if (mounted) {
+        setState(() {});
+      }
     });
   }
 
@@ -815,6 +993,8 @@ class _MessageState extends State<Message> with WidgetsBindingObserver {
   void dispose() {
     WidgetsBinding.instance.removeObserver(this);
     _setOnlineStatus(false);
+    _messageSub.cancel;
+    _textFocusNode.dispose();
     super.dispose();
   }
 
@@ -833,7 +1013,9 @@ class _MessageState extends State<Message> with WidgetsBindingObserver {
             AppBar(
               elevation: 1,
               backgroundColor: Colors.white,
-              leadingWidth: 30,
+              leadingWidth: 56,
+              titleSpacing: 0,
+              centerTitle: false,
               title: Row(
                 children: [
                   CircleAvatar(
@@ -916,8 +1098,8 @@ class _MessageState extends State<Message> with WidgetsBindingObserver {
                           "${selectedMessages.length}",
                           style: const TextStyle(
                             color: Colors.white,
-                            fontSize: 16,
-                            fontWeight: FontWeight.bold,
+                            fontSize: 20,
+                            fontWeight: FontWeight.normal,
                           ),
                         ),
 
@@ -930,8 +1112,8 @@ class _MessageState extends State<Message> with WidgetsBindingObserver {
                             HapticFeedback.lightImpact();
 
                             final selectedText = localMessages
-                                .where((m) =>
-                                    selectedMessages.contains(m["messageId"]))
+                                .where(
+                                    (m) => selectedMessages.contains(m["id"]))
                                 .map((m) => m["text"])
                                 .join("\n");
 
@@ -976,21 +1158,161 @@ class _MessageState extends State<Message> with WidgetsBindingObserver {
                           onPressed: () async {
                             HapticFeedback.mediumImpact();
 
-                            for (final id in selectedMessages) {
-                              await _chatService.deleteMessage(
-                                messageId: id,
-                                senderId: currentUser.uid,
-                                receiverId: widget.contactUserId,
-                                type: "temporary",
-                              );
-                            }
+                            final result = await showModalBottomSheet<String>(
+                              context: context,
+                              shape: const RoundedRectangleBorder(
+                                borderRadius: BorderRadius.vertical(
+                                    top: Radius.circular(18)),
+                              ),
+                              builder: (context) {
+                                return Padding(
+                                  padding: const EdgeInsets.all(12),
+                                  child: Column(
+                                    mainAxisSize: MainAxisSize.min,
+                                    children: [
+                                      const Text(
+                                        "Delete selected messages",
+                                        style: TextStyle(
+                                          fontSize: 17,
+                                          fontWeight: FontWeight.w600,
+                                        ),
+                                      ),
+                                      const SizedBox(height: 4),
 
+                                      Text(
+                                        "Choose how you want to delete these messages",
+                                        textAlign: TextAlign.center,
+                                        style: TextStyle(
+                                          fontSize: 12.5,
+                                          color: Colors.grey.shade600,
+                                          fontWeight: FontWeight.normal,
+                                        ),
+                                      ),
+
+                                      const SizedBox(height: 10),
+
+                                      // TEMPORARY DELETE
+                                      InkWell(
+                                        onTap: () {
+                                          HapticFeedback.lightImpact();
+                                          Navigator.pop(context, "temporary");
+                                        },
+                                        child: Container(
+                                          width: double.infinity,
+                                          padding: const EdgeInsets.symmetric(
+                                              vertical: 14, horizontal: 12),
+                                          decoration: BoxDecoration(
+                                            border: Border.all(
+                                              color: const Color(0XFF2563EB)
+                                                  .withOpacity(0.3),
+                                            ),
+                                            borderRadius:
+                                                BorderRadius.circular(16),
+                                          ),
+                                          child: const Row(
+                                            children: [
+                                              Icon(Icons.restore,
+                                                  color: Color(0XFF2563EB)),
+                                              SizedBox(width: 10),
+                                              Expanded(
+                                                child: Text(
+                                                  "Temporary (can be restored)",
+                                                  style: TextStyle(
+                                                    color: Color(0XFF2563EB),
+                                                    fontWeight: FontWeight.w500,
+                                                  ),
+                                                ),
+                                              ),
+                                            ],
+                                          ),
+                                        ),
+                                      ),
+
+                                      const SizedBox(height: 10),
+
+                                      // PERMANENT DELETE
+                                      InkWell(
+                                        onTap: () {
+                                          HapticFeedback.lightImpact();
+                                          Navigator.pop(context, "permanent");
+                                        },
+                                        child: Container(
+                                          width: double.infinity,
+                                          padding: const EdgeInsets.symmetric(
+                                              vertical: 14, horizontal: 12),
+                                          decoration: BoxDecoration(
+                                            border: Border.all(
+                                                color: Colors.red.shade300),
+                                            borderRadius:
+                                                BorderRadius.circular(16),
+                                          ),
+                                          child: const Row(
+                                            children: [
+                                              Icon(Icons.delete_outline,
+                                                  color: Colors.red),
+                                              SizedBox(width: 10),
+                                              Expanded(
+                                                child: Text(
+                                                  "Permanent (Cannot be restored)",
+                                                  style: TextStyle(
+                                                    color: Colors.red,
+                                                    fontWeight: FontWeight.w500,
+                                                  ),
+                                                ),
+                                              ),
+                                            ],
+                                          ),
+                                        ),
+                                      ),
+                                    ],
+                                  ),
+                                );
+                              },
+                            );
+
+                            if (result == null) return;
                             setState(() {
-                              selectedMessages.clear();
-                              isSelectionMode = false;
+                              isDeletingMessages = true;
                             });
 
-                            await _loadLocalMessages();
+                            try {
+                              for (final id in selectedMessages) {
+                                final msgList = localMessages.where(
+                                  (m) => m["id"] == id,
+                                );
+
+                                if (msgList.isEmpty) continue;
+
+                                final msg = msgList.first;
+
+                                final isMe = msg["senderId"] == currentUser.uid;
+
+                                if (isMe) {
+                                  // 🔥 SENT → FIRESTORE + LOCAL
+                                  await _chatService.deleteMessage(
+                                    messageId: id,
+                                    senderId: currentUser.uid,
+                                    receiverId: widget.contactUserId,
+                                    type: result!,
+                                  );
+                                } else {
+                                  // 🔵 RECEIVED → ONLY LOCAL
+                                  await _chatService.deleteForMe(
+                                    messageId: id,
+                                    currentUserId: currentUser.uid,
+                                    otherUserId: widget.contactUserId,
+                                  );
+                                }
+                              }
+                            } finally {
+                              setState(() {
+                                isDeletingMessages = false;
+                                selectedMessages.clear();
+                                isSelectionMode = false;
+                              });
+
+                              await _loadLocalMessages();
+                            }
                           },
                         ),
 
@@ -1005,7 +1327,7 @@ class _MessageState extends State<Message> with WidgetsBindingObserver {
                               case 'select_all':
                                 setState(() {
                                   selectedMessages = localMessages
-                                      .map((e) => e["messageId"].toString())
+                                      .map((e) => e["id"].toString())
                                       .toList();
                                 });
 
@@ -1056,6 +1378,31 @@ class _MessageState extends State<Message> with WidgetsBindingObserver {
         children: [
           Column(
             children: [
+              if (showUnknownCard)
+                UnknownContactCard(
+                  phoneNumber: unknownPhone ?? "",
+                  contactName: unknownName ?? "",
+                  onSave: () async {
+                    final result = await Navigator.push(
+                      context,
+                      MaterialPageRoute(
+                        builder: (_) => AddContact(
+                          phoneNumber: unknownPhone ?? "",
+                          contactName: unknownName ?? "",
+                        ),
+                      ),
+                    );
+
+                    if (result == true) {
+                      checkUnknownContact(widget.contactUserId);
+                    }
+                  },
+                  onDismiss: () {
+                    setState(() {
+                      showUnknownCard = false;
+                    });
+                  },
+                ),
               Expanded(
                 child: FutureBuilder<List<Map<String, dynamic>>>(
                   future: _dbHelper.getMessages(
@@ -1068,6 +1415,13 @@ class _MessageState extends State<Message> with WidgetsBindingObserver {
                     }
 
                     final docs = snapshot.data!;
+                    if (!_checkedContact && docs.isNotEmpty) {
+                      _checkedContact = true;
+
+                      WidgetsBinding.instance.addPostFrameCallback((_) {
+                        checkUnknownContact(widget.contactUserId);
+                      });
+                    }
 
                     WidgetsBinding.instance.addPostFrameCallback((_) async {
                       if (!hasInitiallyScrolled && docs.isNotEmpty) {
@@ -1096,7 +1450,7 @@ class _MessageState extends State<Message> with WidgetsBindingObserver {
                       itemScrollController: _itemScrollController,
                       itemPositionsListener: _itemPositionsListener,
                       padding: const EdgeInsets.symmetric(
-                          horizontal: 12, vertical: 10),
+                          horizontal: 0, vertical: 10),
                       itemBuilder: (context, index) {
                         final msg = docs[index];
 
@@ -1148,7 +1502,7 @@ class _MessageState extends State<Message> with WidgetsBindingObserver {
                               return GestureDetector(
                                   // 📌 COPY
                                   onLongPress: () {
-                                    if (isDeleted) return;
+                                    if (isDeleted || isSelectionMode) return;
                                     HapticFeedback.heavyImpact();
                                     _removeKeyboardFocus();
                                     final isMe = msg["senderId"] ==
@@ -1267,7 +1621,7 @@ class _MessageState extends State<Message> with WidgetsBindingObserver {
 
                                   // 📌 SWIPE REPLY
                                   onHorizontalDragUpdate: (details) {
-                                    if (isDeleted) return;
+                                    if (isDeleted || isSelectionMode) return;
 
                                     setState(() {
                                       final raw = swipeOffset[index] ?? 0;
@@ -1277,6 +1631,7 @@ class _MessageState extends State<Message> with WidgetsBindingObserver {
                                     });
                                   },
                                   onHorizontalDragEnd: (_) {
+                                    if (isSelectionMode) return;
                                     final offset = swipeOffset[index] ?? 0;
 
                                     if (offset.abs() > 70) {
@@ -1297,7 +1652,9 @@ class _MessageState extends State<Message> with WidgetsBindingObserver {
                                   child: Transform.translate(
                                     offset: Offset(swipeOffset[index] ?? 0, 0),
                                     child: GestureDetector(
-                                      onDoubleTap: isMe && !isDeleted
+                                      onDoubleTap: (isMe &&
+                                              !isDeleted &&
+                                              !isSelectionMode)
                                           ? () {
                                               setState(() {
                                                 // toggle edit mode
@@ -1339,6 +1696,7 @@ class _MessageState extends State<Message> with WidgetsBindingObserver {
                                           userNames: userNames,
                                           isEdited: isEdited,
                                           isRestored: isRestored,
+                                          isSelectionMode: isSelectionMode,
                                           isHighlighted:
                                               focusedMessageId == messageId,
                                           onRestore: () async {
@@ -1371,6 +1729,7 @@ class _MessageState extends State<Message> with WidgetsBindingObserver {
                                             }
                                           },
                                           onTap: () async {
+                                            print("Tapped: $messageId");
                                             // 🟦 MULTI SELECT MODE ACTIVE
                                             if (isSelectionMode) {
                                               setState(() {
@@ -1413,6 +1772,22 @@ class _MessageState extends State<Message> with WidgetsBindingObserver {
                                                   curve: Curves.easeInOutCubic,
                                                   alignment: 0.3,
                                                 );
+                                                setState(() {
+                                                  focusedMessageId = targetId;
+                                                });
+
+                                                Future.delayed(
+                                                  const Duration(seconds: 3),
+                                                  () {
+                                                    if (!mounted) return;
+
+                                                    setState(() {
+                                                      focusedMessageId = null;
+                                                      isNavigatingToReply =
+                                                          false;
+                                                    });
+                                                  },
+                                                );
                                               }
                                             }
                                           },
@@ -1425,6 +1800,7 @@ class _MessageState extends State<Message> with WidgetsBindingObserver {
                         );
 
                         return Container(
+                          padding: EdgeInsets.only(left: 4, right: 4),
                           key: ValueKey(messageId),
                           child: Column(
                             children: widgets,
@@ -1448,6 +1824,7 @@ class _MessageState extends State<Message> with WidgetsBindingObserver {
                         maxWidth: 310, // 👈 adjust (200–300 feels good)
                       ),
                       child: Container(
+                        //color: Colors.amber,
                         margin: EdgeInsets.symmetric(horizontal: 10),
                         padding:
                             EdgeInsets.symmetric(horizontal: 12, vertical: 6),
@@ -1522,13 +1899,58 @@ class _MessageState extends State<Message> with WidgetsBindingObserver {
                               keyboardType: TextInputType.multiline,
                               textInputAction: TextInputAction.newline,
                               decoration: InputDecoration(
+                                prefixIcon: AttachmentMenu(
+                                  onGallery: () {
+                                    Navigator.push(
+                                      context,
+                                      MaterialPageRoute(
+                                        builder: (_) => const GalleryScreen(),
+                                      ),
+                                    );
+                                  },
+                                  onCamera: () {
+                                    Navigator.push(
+                                      context,
+                                      MaterialPageRoute(
+                                        builder: (_) => const CameraScreen(),
+                                      ),
+                                    );
+                                  },
+                                  onDocuments: () {
+                                   Navigator.push(
+                                      context,
+                                      MaterialPageRoute(
+                                        builder: (_) => const DocumentsScreen(),
+                                      ),
+                                    );
+                                  },
+                                  onContacts: () {
+                                    Navigator.push(
+                                      context,
+                                      MaterialPageRoute(
+                                        builder: (_) =>
+                                            const ContactShareScreen(),
+                                      ),
+                                    );
+                                  },
+                                  onImages: () {
+                                    Navigator.push(
+                                      context,
+                                      MaterialPageRoute(
+                                        builder: (_) => const LocationScreen(),
+                                      ),
+                                    );
+                                  },
+                                ),
+                                prefixIconConstraints:
+                                    const BoxConstraints(maxWidth: 42),
                                 hintText: "Type a message...",
                                 filled: true,
                                 fillColor: Color(0xFFF1F5F9),
-                                contentPadding: EdgeInsets.only(
-                                  right: 30,
-                                  left: 12,
+                                contentPadding: const EdgeInsets.only(
+                                  right: 0,
                                   top: 12,
+                                  left: 0,
                                   bottom: 12,
                                 ),
                                 border: OutlineInputBorder(
@@ -1541,10 +1963,15 @@ class _MessageState extends State<Message> with WidgetsBindingObserver {
                               right: 0,
                               top: 0,
                               child: IconButton(
-                                icon: Icon(
-                                  Icons.open_in_full,
-                                  size: 16,
+                                icon: const Icon(
+                                  Icons.fullscreen,
+                                  size: 24,
                                   color: Color.fromARGB(221, 110, 110, 110),
+                                  shadows: [
+                                    Shadow(
+                                        blurRadius: 0.5,
+                                        color: Color.fromARGB(255, 0, 0, 0))
+                                  ],
                                 ),
                                 onPressed: openFullScreenInput,
                               ),
@@ -1583,6 +2010,15 @@ class _MessageState extends State<Message> with WidgetsBindingObserver {
               ),
             ],
           ),
+          if (isDeletingMessages)
+            Positioned.fill(
+                child: Container(
+              color: Colors.black.withOpacity(0.25),
+              child: const Center(
+                  child: CircularProgressIndicator(
+                color: Colors.blue,
+              )),
+            ))
         ],
       ),
     );

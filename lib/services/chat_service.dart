@@ -1,12 +1,18 @@
 import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:intl/intl.dart';
 import '../database/db_helper.dart';
-
-final DBHelper _dbHelper = DBHelper();
+import 'package:firebase_auth/firebase_auth.dart';
+import 'package:flutter/foundation.dart';
 
 class ChatService {
   final _firestore = FirebaseFirestore.instance;
-  final DBHelper _dbHelper = DBHelper();
+  late final DBHelper _dbHelper;
+
+  static final ValueNotifier<String?> chatUpdated = ValueNotifier(null);
+
+  ChatService(String userId) {
+    _dbHelper = DBHelper(userId); // user-specific DB
+  }
 
   String getChatId(String user1, String user2) {
     List<String> ids = [user1, user2];
@@ -79,10 +85,30 @@ class ChatService {
     };
 
     await docRef.set(messageData);
-
+    await _firestore.collection("chats").doc(chatId).set({
+      'id': chatId,
+      'participants': [senderId, receiverId],
+      'user1': senderId,
+      'user2': receiverId,
+      'lastMessage': text,
+      'lastMessageTime': FieldValue.serverTimestamp(),
+      'status': 'sent',
+      'lastSenderId': senderId,
+    }, SetOptions(merge: true));
+    await _dbHelper.insertOrUpdateChat({
+      "id": chatId,
+      "user1": senderId,
+      "user2": receiverId,
+      "lastMessage": text,
+      "lastMessageTime": now.millisecondsSinceEpoch,
+      "status": initialStatus ?? "sent",
+      'lastSenderId': senderId,
+    });
+    await syncChat(chatId);
+    chatUpdated.value = chatId;
 
     await _dbHelper.insertMessage({
-      "id": messageId,
+      "id": realMessageId, // 🔥 MUST MATCH FIRESTORE
       "senderId": senderId,
       "receiverId": receiverId,
       "text": text,
@@ -94,14 +120,6 @@ class ChatService {
       "isDeleted": 0,
       "edited": 0
     });
-
-    await _dbHelper.printMessages();
-
-    await _firestore.collection("chats").doc(chatId).set({
-      "participants": [senderId, receiverId],
-      "lastMessage": text,
-      "lastMessageTime": FieldValue.serverTimestamp(),
-    }, SetOptions(merge: true));
   }
 
   Future<void> saveMessageLocally({
@@ -160,18 +178,33 @@ class ChatService {
       final chatId = getChatId(senderId, receiverId);
 
       // 1. FIRESTORE UPDATE
-      await _firestore
+      final messageRef = _firestore
           .collection("chats")
           .doc(chatId)
           .collection("messages")
-          .doc(messageId)
-          .update({
+          .doc(messageId);
+
+      await messageRef.update({
         "text": newText,
         "edited": 1,
       });
 
+// Is this the latest message?
+      final latest = await messageRef.parent
+          .orderBy("createdAt", descending: true)
+          .limit(1)
+          .get();
+
+      if (latest.docs.isNotEmpty && latest.docs.first.id == messageId) {
+        await _firestore.collection("chats").doc(chatId).update({
+          "lastMessage": newText,
+        });
+      }
+
       // 2. LOCAL SQLITE UPDATE (🔥 MISSING PART)
       await _dbHelper.updateMessage(messageId, newText);
+      await syncChatPreview(chatId);
+      chatUpdated.value = chatId;
 
       print("✅ Message updated successfully");
     } catch (e) {
@@ -238,6 +271,8 @@ class ChatService {
       "lastMessage": newLastMessage,
       "lastMessageTime": newTime ?? FieldValue.serverTimestamp(),
     }, SetOptions(merge: true));
+    await syncChatPreview(chatId);
+    chatUpdated.value = chatId;
   }
 
   Future<void> restoreMessage({
@@ -292,6 +327,58 @@ class ChatService {
       "lastMessage": newLastMessage,
       "lastMessageTime": newTime ?? FieldValue.serverTimestamp(),
     }, SetOptions(merge: true));
+    await syncChatPreview(chatId);
+    chatUpdated.value = chatId;
+  }
+
+  Future<void> deleteForMe({
+    required String messageId,
+    required String currentUserId,
+    required String otherUserId,
+  }) async {
+    final chatId = getChatId(
+      currentUserId,
+      otherUserId,
+    );
+
+    final messageRef = _firestore
+        .collection("chats")
+        .doc(chatId)
+        .collection("messages")
+        .doc(messageId);
+
+    // Delete only for current user
+    await messageRef.update({
+      "hiddenFor": FieldValue.arrayUnion([currentUserId])
+    });
+
+    /////////////////////////////////////////////////////
+    // FIRESTORE
+    /////////////////////////////////////////////////////
+
+    final doc = await messageRef.get();
+
+    print("");
+    print("======== FIRESTORE ========");
+
+    print(doc.data());
+
+    print("===========================");
+    print("");
+
+    /////////////////////////////////////////////////////
+    // SQLITE
+    /////////////////////////////////////////////////////
+
+    await _dbHelper.deleteLocalMessage(messageId);
+
+    print("");
+    print("======== SQLITE =========");
+
+    await _dbHelper.printMessage(messageId);
+
+    print("=========================");
+    print("");
   }
 
 // 🔥 MARK MESSAGES AS DELIVERED
@@ -313,6 +400,15 @@ class ChatService {
       await doc.reference.update({
         "status": "delivered",
       });
+
+      if (doc.id == snapshot.docs.last.id) {
+        await _firestore.collection("chats").doc(chatId).update({
+          "status": "delivered",
+        });
+
+        await syncChatPreview(chatId);
+        chatUpdated.value = chatId;
+      }
     }
   }
 
@@ -335,8 +431,17 @@ class ChatService {
       await doc.reference.update({
         "status": "seen",
         "seen": true,
-        "seenAt": FieldValue.serverTimestamp(), // 🔥 ADD THIS
+        "seenAt": FieldValue.serverTimestamp(),
       });
+
+      if (doc.id == snapshot.docs.last.id) {
+        await _firestore.collection("chats").doc(chatId).update({
+          "status": "seen",
+        });
+
+        await syncChatPreview(chatId);
+        chatUpdated.value = chatId;
+      }
     }
   }
 
@@ -360,6 +465,148 @@ class ChatService {
         "seen": true,
         "seenAt": FieldValue.serverTimestamp(),
       });
+
+      if (doc.id == query.docs.last.id) {
+        await _firestore.collection("chats").doc(chatId).update({
+          "status": "seen",
+        });
+
+        await syncChatPreview(chatId);
+        chatUpdated.value = chatId;
+      }
     }
+  }
+
+  Future<void> syncMessages() async {
+    final uid = FirebaseAuth.instance.currentUser!.uid;
+
+    final chats = await _firestore
+        .collection("chats")
+        .where("participants", arrayContains: uid)
+        .get();
+
+    for (final chat in chats.docs) {
+      final messages = await chat.reference
+          .collection("messages")
+          .orderBy("createdAt")
+          .get();
+
+      for (final msg in messages.docs) {
+        final data = msg.data();
+
+        //final messageId = data["id"];
+
+        // 🔥 CHECK IF EXISTS FIRST
+        final exists = await _dbHelper.messageExists(data["id"]);
+
+        if (!exists) {
+          await _dbHelper.insertMessage({
+            "id": data["id"],
+            "senderId": data["senderId"],
+            "receiverId": data["receiverId"],
+            "text": (data["text"]?.toString() ?? ""),
+            "replyTo": data["replyTo"],
+            "replyToId": data["replyToId"],
+            "status": data["status"] ?? "sent",
+            "createdAt": (data["createdAt"] is Timestamp)
+                ? (data["createdAt"] as Timestamp).millisecondsSinceEpoch
+                : DateTime.now().millisecondsSinceEpoch,
+            "localTime": data["localTime"] ?? "",
+            "isDeleted": data["isDeleted"] == 1 ? 1 : 0,
+            "edited": data["edited"] == 1 ? 1 : 0,
+          });
+
+          final sender = data["senderId"];
+          final receiver = data["receiverId"];
+
+          final chatId = getChatId(sender, receiver);
+
+          await _dbHelper.insertOrUpdateChat({
+            'id': chatId,
+            'user1': sender,
+            'user2': receiver,
+            'lastMessage': data["text"] ?? "",
+            'lastMessageTime': (data["createdAt"] is Timestamp)
+                ? (data["createdAt"] as Timestamp).millisecondsSinceEpoch
+                : DateTime.now().millisecondsSinceEpoch,
+            'status': data["status"] ?? "sent",
+            "lastSenderId": sender,
+          });
+        }
+      }
+    }
+
+    print("✅ Messages synced");
+  }
+
+  Future<void> syncChatPreview(String chatId) async {
+    final chatDoc = await _firestore.collection("chats").doc(chatId).get();
+
+    if (!chatDoc.exists) return;
+
+    final data = chatDoc.data()!;
+
+    await _dbHelper.insertOrUpdateChat({
+      "id": chatId,
+      "user1": data["user1"],
+      "user2": data["user2"],
+      "lastMessage": data["lastMessage"] ?? "",
+      "lastMessageTime": (data["lastMessageTime"] is Timestamp)
+          ? (data["lastMessageTime"] as Timestamp).millisecondsSinceEpoch
+          : DateTime.now().millisecondsSinceEpoch,
+      "status": data["status"] ?? "sent",
+      "lastSenderId": data["lastSenderId"],
+    });
+  }
+
+  Future<void> syncChat(String chatId) async {
+    final uid = FirebaseAuth.instance.currentUser!.uid;
+
+    final chat = await _firestore.collection("chats").doc(chatId).get();
+
+    if (!chat.exists) return;
+
+    final messages =
+        await chat.reference.collection("messages").orderBy("createdAt").get();
+
+    for (final msg in messages.docs) {
+      final data = msg.data();
+
+      final hiddenFor = List<String>.from(data["hiddenFor"] ?? []);
+
+      if (hiddenFor.contains(uid)) continue;
+
+      await _dbHelper.insertMessage({
+        "id": data["id"],
+        "senderId": data["senderId"],
+        "receiverId": data["receiverId"],
+        "text": data["text"],
+        "replyTo": data["replyTo"],
+        "replyToId": data["replyToId"],
+        "status": data["status"] ?? "sent",
+        "createdAt": (data["createdAt"] is Timestamp)
+            ? (data["createdAt"] as Timestamp).millisecondsSinceEpoch
+            : DateTime.now().millisecondsSinceEpoch,
+        "localTime": data["localTime"] ?? "",
+        "isDeleted": data["isDeleted"] == 1 ? 1 : 0,
+        "edited": data["edited"] == 1 ? 1 : 0,
+      });
+
+      await _dbHelper.insertOrUpdateChat({
+        "id": chatId,
+        "user1": data["senderId"],
+        "user2": data["receiverId"],
+        "lastMessage": data["text"] ?? "",
+        "lastMessageTime": (data["createdAt"] is Timestamp)
+            ? (data["createdAt"] as Timestamp).millisecondsSinceEpoch
+            : DateTime.now().millisecondsSinceEpoch,
+        "status": data["status"] ?? "sent",
+        "lastSenderId": data["senderId"],
+      });
+    }
+  }
+
+  Future<void> refreshChatList(String uid, Function reload) async {
+    await reload();
   }
 }

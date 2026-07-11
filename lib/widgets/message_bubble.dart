@@ -18,6 +18,7 @@ class MessageBubble extends StatefulWidget {
   final String? deletedType;
   final Map<String, String>? userNames;
   final bool isRestored;
+  final bool isSelectionMode;
 
   const MessageBubble({
     super.key, // ✅ IMPORTANT (use super.key instead of Key? key)
@@ -36,6 +37,7 @@ class MessageBubble extends StatefulWidget {
     this.onPermanentDelete,
     this.deletedType,
     this.isRestored = false,
+    required this.isSelectionMode,
   });
 
   @override
@@ -323,6 +325,7 @@ class _MessageBubbleState extends State<MessageBubble>
       );
     }
     return InkWell(
+      onTap: widget.isSelectionMode ? widget.onTap : null,
       onTapDown: (_) {
         controller.forward(from: 0).then((_) {
           controller.reverse();
@@ -395,7 +398,10 @@ class _MessageBubbleState extends State<MessageBubble>
                 children: [
                   if (widget.msg["replyTo"] != null)
                     GestureDetector(
-                      onTap: widget.onTap,
+                      onTap: () {
+                        // Otherwise preserve current behavior
+                        widget.onTap?.call();
+                      },
                       child: Container(
                         padding:
                             EdgeInsets.symmetric(horizontal: 8, vertical: 6),
